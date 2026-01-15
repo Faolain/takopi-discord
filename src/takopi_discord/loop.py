@@ -57,7 +57,7 @@ async def run_main_loop(
     running_tasks: RunningTasks = {}
     state_store = DiscordStateStore(cfg.runtime.config_path)
     mapper = CategoryChannelMapper(cfg.bot)
-    transport = cast(DiscordTransport, cfg.exec_cfg.transport)
+    _ = cast(DiscordTransport, cfg.exec_cfg.transport)  # Used for type checking only
 
     logger.info(
         "loop.config",
@@ -175,7 +175,9 @@ async def run_main_loop(
                         guild_id=guild_id,
                         channel_id=channel_id,
                         thread_id=thread_id,
-                        token_preview=new_token.value[:20] + "..." if len(new_token.value) > 20 else new_token.value,
+                        token_preview=new_token.value[:20] + "..."
+                        if len(new_token.value) > 20
+                        else new_token.value,
                     )
                     if state_store and guild_id:
                         engine_id = cfg.runtime.default_engine or "claude"
@@ -219,7 +221,10 @@ async def run_main_loop(
 
     async def handle_message(message: discord.Message) -> None:
         """Handle an incoming Discord message."""
-        print(f"[DEBUG handle_message] ENTERED - channel={message.channel.id} author={message.author.name}", flush=True)
+        print(
+            f"[DEBUG handle_message] ENTERED - channel={message.channel.id} author={message.author.name}",
+            flush=True,
+        )
         logger.debug(
             "message.raw",
             channel_type=type(message.channel).__name__,
@@ -228,11 +233,16 @@ async def run_main_loop(
             content_preview=message.content[:50] if message.content else "",
         )
         if not should_process_message(message, cfg.bot.user, require_mention=False):
-            logger.debug("message.skipped", reason="should_process_message returned False")
-            print(f"[DEBUG handle_message] should_process_message returned False, returning", flush=True)
+            logger.debug(
+                "message.skipped", reason="should_process_message returned False"
+            )
+            print(
+                "[DEBUG handle_message] should_process_message returned False, returning",
+                flush=True,
+            )
             return
 
-        print(f"[DEBUG handle_message] passed should_process_message", flush=True)
+        print("[DEBUG handle_message] passed should_process_message", flush=True)
         channel_id = message.channel.id
         guild_id = message.guild.id if message.guild else None
         thread_id = None
@@ -244,7 +254,10 @@ async def run_main_loop(
             parent = message.channel.parent
             if parent:
                 channel_id = parent.id
-            print(f"[DEBUG handle_message] in thread: thread_id={thread_id} parent_channel_id={channel_id}", flush=True)
+            print(
+                f"[DEBUG handle_message] in thread: thread_id={thread_id} parent_channel_id={channel_id}",
+                flush=True,
+            )
             logger.debug(
                 "message.in_thread",
                 thread_id=thread_id,
@@ -254,7 +267,9 @@ async def run_main_loop(
             with contextlib.suppress(discord.HTTPException):
                 await message.channel.join()
 
-        print(f"[DEBUG handle_message] about to get context from state_store", flush=True)
+        print(
+            "[DEBUG handle_message] about to get context from state_store", flush=True
+        )
         # Get context from state or infer from channel
         # For threads, check thread-specific context first (set via @branch prefix)
         context_data: DiscordChannelContext | None = None
@@ -262,12 +277,21 @@ async def run_main_loop(
             if thread_id:
                 # Check if thread has its own bound context (from @branch prefix)
                 context_data = await state_store.get_context(guild_id, thread_id)
-                print(f"[DEBUG handle_message] got thread context: {context_data}", flush=True)
+                print(
+                    f"[DEBUG handle_message] got thread context: {context_data}",
+                    flush=True,
+                )
             if context_data is None:
-                print(f"[DEBUG handle_message] calling state_store.get_context(guild_id={guild_id}, channel_id={channel_id})", flush=True)
+                print(
+                    f"[DEBUG handle_message] calling state_store.get_context(guild_id={guild_id}, channel_id={channel_id})",
+                    flush=True,
+                )
                 context_data = await state_store.get_context(guild_id, channel_id)
 
-        print(f"[DEBUG handle_message] got context_data from state_store: {context_data}", flush=True)
+        print(
+            f"[DEBUG handle_message] got context_data from state_store: {context_data}",
+            flush=True,
+        )
         if context_data is None and guild_id:
             mapping = mapper.get_channel_mapping(guild_id, channel_id)
             if mapping:
@@ -285,19 +309,25 @@ async def run_main_loop(
 
         # Extract prompt
         prompt = extract_prompt_from_message(message, cfg.bot.user)
-        print(f"[DEBUG handle_message] extracted prompt: '{prompt[:50] if prompt else ''}'", flush=True)
+        print(
+            f"[DEBUG handle_message] extracted prompt: '{prompt[:50] if prompt else ''}'",
+            flush=True,
+        )
 
         # Parse @branch prefix (only for new messages in channels, not in existing threads)
         branch_override: str | None = None
         if thread_id is None:
             branch_override, prompt = parse_branch_prefix(prompt)
             if branch_override:
-                print(f"[DEBUG handle_message] parsed branch override: {branch_override}", flush=True)
+                print(
+                    f"[DEBUG handle_message] parsed branch override: {branch_override}",
+                    flush=True,
+                )
                 logger.info("branch.override", branch=branch_override)
 
         # Allow empty prompt if @branch was used (thread will be created for future prompts)
         if not prompt.strip() and not branch_override:
-            print(f"[DEBUG handle_message] empty prompt, returning", flush=True)
+            print("[DEBUG handle_message] empty prompt, returning", flush=True)
             return
 
         # Apply branch override to context
@@ -335,7 +365,9 @@ async def run_main_loop(
             if branch_override:
                 thread_name = branch_override
             else:
-                thread_name = prompt[:100] if len(prompt) <= 100 else prompt[:97] + "..."
+                thread_name = (
+                    prompt[:100] if len(prompt) <= 100 else prompt[:97] + "..."
+                )
             created_thread_id = await cfg.bot.create_thread(
                 channel_id=channel_id,
                 message_id=message.id,
@@ -368,7 +400,9 @@ async def run_main_loop(
                     # If @branch was used without a prompt, send confirmation and return
                     if not prompt.strip():
                         thread_channel = cfg.bot.client.get_channel(thread_id)
-                        if thread_channel and isinstance(thread_channel, discord.Thread):
+                        if thread_channel and isinstance(
+                            thread_channel, discord.Thread
+                        ):
                             await thread_channel.send(
                                 f"Thread bound to branch `{branch_override}`. "
                                 "Send a message here to start prompting."
@@ -394,22 +428,40 @@ async def run_main_loop(
         )
         if state_store and guild_id:
             engine_id = cfg.runtime.default_engine or "claude"
-            print(f"[DEBUG handle_message] about to call state_store.get_session(guild_id={guild_id}, session_key={session_key}, engine_id={engine_id})", flush=True)
+            print(
+                f"[DEBUG handle_message] about to call state_store.get_session(guild_id={guild_id}, session_key={session_key}, engine_id={engine_id})",
+                flush=True,
+            )
             try:
-                token_str = await state_store.get_session(guild_id, session_key, engine_id)
-                print(f"[DEBUG handle_message] got token_str: {token_str[:20] if token_str else None}...", flush=True)
+                token_str = await state_store.get_session(
+                    guild_id, session_key, engine_id
+                )
+                print(
+                    f"[DEBUG handle_message] got token_str: {token_str[:20] if token_str else None}...",
+                    flush=True,
+                )
             except Exception as e:
-                print(f"[DEBUG handle_message] EXCEPTION in get_session: {e}", flush=True)
+                print(
+                    f"[DEBUG handle_message] EXCEPTION in get_session: {e}", flush=True
+                )
                 import traceback
+
                 traceback.print_exc()
                 raise
             if token_str:
                 try:
                     resume_token = ResumeToken(engine=engine_id, value=token_str)
-                    print(f"[DEBUG handle_message] created resume_token from token_str", flush=True)
+                    print(
+                        "[DEBUG handle_message] created resume_token from token_str",
+                        flush=True,
+                    )
                 except Exception as e:
-                    print(f"[DEBUG handle_message] EXCEPTION creating ResumeToken: {e}", flush=True)
+                    print(
+                        f"[DEBUG handle_message] EXCEPTION creating ResumeToken: {e}",
+                        flush=True,
+                    )
                     import traceback
+
                     traceback.print_exc()
                     raise
                 logger.info(
@@ -417,7 +469,9 @@ async def run_main_loop(
                     guild_id=guild_id,
                     session_key=session_key,
                     engine_id=engine_id,
-                    token_preview=token_str[:20] + "..." if len(token_str) > 20 else token_str,
+                    token_preview=token_str[:20] + "..."
+                    if len(token_str) > 20
+                    else token_str,
                 )
             else:
                 logger.debug(
@@ -427,7 +481,10 @@ async def run_main_loop(
                     engine_id=engine_id,
                 )
 
-        print(f"[DEBUG handle_message] building reply_ref, is_new_thread={is_new_thread}", flush=True)
+        print(
+            f"[DEBUG handle_message] building reply_ref, is_new_thread={is_new_thread}",
+            flush=True,
+        )
         # For new threads, don't set reply_ref since the original message is in the parent channel
         # and runner_bridge creates its own user_ref that would be incorrect for cross-channel replies
         reply_ref: MessageRef | None = None
@@ -438,7 +495,10 @@ async def run_main_loop(
                 thread_id=thread_id,
             )
 
-        print(f"[DEBUG handle_message] about to call run_job with resume_token={resume_token is not None}", flush=True)
+        print(
+            f"[DEBUG handle_message] about to call run_job with resume_token={resume_token is not None}",
+            flush=True,
+        )
         logger.info(
             "message.received",
             channel_id=channel_id,
@@ -457,7 +517,7 @@ async def run_main_loop(
         job_channel_id = thread_id if thread_id else channel_id
 
         try:
-            print(f"[DEBUG handle_message] calling run_job NOW", flush=True)
+            print("[DEBUG handle_message] calling run_job NOW", flush=True)
             await run_job(
                 channel_id=job_channel_id,
                 user_msg_id=message.id,

@@ -1,7 +1,5 @@
 """Tests for handlers module."""
 
-import pytest
-
 from takopi_discord.handlers import parse_branch_prefix
 
 

@@ -50,9 +50,13 @@ class DiscordBotClient:
         @self._client.event
         async def on_message(message: discord.Message) -> None:
             # Debug: print to stdout to bypass any logging issues
-            print(f"[DEBUG on_message] channel={type(message.channel).__name__} id={message.channel.id} author={message.author.name} content={message.content[:30] if message.content else '(empty)'}", flush=True)
+            print(
+                f"[DEBUG on_message] channel={type(message.channel).__name__} id={message.channel.id} author={message.author.name} content={message.content[:30] if message.content else '(empty)'}",
+                flush=True,
+            )
             # Debug: log ALL incoming messages at the client level
             import logging
+
             logging.getLogger("takopi.discord.client").debug(
                 "on_message raw: channel_type=%s channel_id=%s author=%s content_preview=%s",
                 type(message.channel).__name__,
@@ -61,14 +65,14 @@ class DiscordBotClient:
                 message.content[:30] if message.content else "(empty)",
             )
             if message.author == self._client.user:
-                print(f"[DEBUG on_message] SKIPPED: bot's own message", flush=True)
+                print("[DEBUG on_message] SKIPPED: bot's own message", flush=True)
                 return
             if self._message_handler is not None:
-                print(f"[DEBUG on_message] calling message_handler...", flush=True)
+                print("[DEBUG on_message] calling message_handler...", flush=True)
                 await self._message_handler(message)
-                print(f"[DEBUG on_message] message_handler returned", flush=True)
+                print("[DEBUG on_message] message_handler returned", flush=True)
             else:
-                print(f"[DEBUG on_message] NO message_handler set!", flush=True)
+                print("[DEBUG on_message] NO message_handler set!", flush=True)
 
     @property
     def client(self) -> discord.Client:
