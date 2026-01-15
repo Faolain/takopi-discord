@@ -395,7 +395,9 @@ async def run_main_loop(
                         worktrees_dir=channel_context.worktrees_dir,
                         default_engine=channel_context.default_engine,
                     )
-                    await state_store.set_context(guild_id, thread_id, new_thread_context)
+                    await state_store.set_context(
+                        guild_id, thread_id, new_thread_context
+                    )
                     logger.info(
                         "thread.context_saved",
                         thread_id=thread_id,
