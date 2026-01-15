@@ -106,6 +106,9 @@ class DiscordBotClient:
             guild = discord.Object(id=self._guild_id)
             self._tree.copy_global_to(guild=guild)
             await self._tree.sync(guild=guild)
+            # Clear any stale global commands to avoid duplicates
+            self._tree.clear_commands(guild=None)
+            await self._tree.sync()
         else:
             await self._tree.sync()
 
