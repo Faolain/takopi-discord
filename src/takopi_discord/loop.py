@@ -295,7 +295,8 @@ async def run_main_loop(
                 print(f"[DEBUG handle_message] parsed branch override: {branch_override}", flush=True)
                 logger.info("branch.override", branch=branch_override)
 
-        if not prompt.strip():
+        # Allow empty prompt if @branch was used (thread will be created for future prompts)
+        if not prompt.strip() and not branch_override:
             print(f"[DEBUG handle_message] empty prompt, returning", flush=True)
             return
 
@@ -363,6 +364,21 @@ async def run_main_loop(
                         project=run_context.project,
                         branch=branch_override,
                     )
+
+                    # If @branch was used without a prompt, send confirmation and return
+                    if not prompt.strip():
+                        thread_channel = cfg.bot.client.get_channel(thread_id)
+                        if thread_channel and isinstance(thread_channel, discord.Thread):
+                            await thread_channel.send(
+                                f"Thread bound to branch `{branch_override}`. "
+                                "Send a message here to start prompting."
+                            )
+                        logger.info(
+                            "branch.thread_only",
+                            thread_id=thread_id,
+                            branch=branch_override,
+                        )
+                        return
 
         # Get resume token to maintain conversation continuity
         # For threads, use thread_id as the session key to maintain conversation continuity
