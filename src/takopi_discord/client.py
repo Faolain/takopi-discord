@@ -90,8 +90,12 @@ class DiscordBotClient:
         async def on_application_command_error(
             ctx: discord.ApplicationContext, error: Exception
         ) -> None:
-            print(f"[DEBUG] Command error in /{ctx.command.name}: {type(error).__name__}: {error}", flush=True)
+            print(
+                f"[DEBUG] Command error in /{ctx.command.name}: {type(error).__name__}: {error}",
+                flush=True,
+            )
             import traceback
+
             traceback.print_exc()
 
         @self._bot.event
@@ -100,7 +104,10 @@ class DiscordBotClient:
 
         @self._bot.event
         async def on_interaction(interaction: discord.Interaction) -> None:
-            print(f"[DEBUG] Interaction received: type={interaction.type} data={interaction.data}", flush=True)
+            print(
+                f"[DEBUG] Interaction received: type={interaction.type} data={interaction.data}",
+                flush=True,
+            )
 
         return self._bot
 
@@ -130,7 +137,10 @@ class DiscordBotClient:
         assert self._ready_event is not None
 
         # Debug: print pending commands before starting
-        print(f"[DEBUG] Pending commands before start: {len(bot.pending_application_commands)}", flush=True)
+        print(
+            f"[DEBUG] Pending commands before start: {len(bot.pending_application_commands)}",
+            flush=True,
+        )
         for cmd in bot.pending_application_commands:
             print(f"[DEBUG]   - {cmd.name}", flush=True)
 
@@ -138,7 +148,10 @@ class DiscordBotClient:
         await self._ready_event.wait()
 
         # Debug: print pending commands after ready
-        print(f"[DEBUG] Pending commands after ready: {len(bot.pending_application_commands)}", flush=True)
+        print(
+            f"[DEBUG] Pending commands after ready: {len(bot.pending_application_commands)}",
+            flush=True,
+        )
         for cmd in bot.pending_application_commands:
             print(f"[DEBUG]   - {cmd.name}: {cmd.options}", flush=True)
 
