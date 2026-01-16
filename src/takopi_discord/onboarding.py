@@ -125,7 +125,8 @@ async def _validate_discord_token(token: str) -> tuple[str, str] | None:
     import discord
 
     intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
+    # Use discord.Bot for Pycord
+    client = discord.Bot(intents=intents)
 
     try:
         ready_event = anyio.Event()

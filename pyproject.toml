@@ -7,8 +7,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.14"
 dependencies = [
-    "discord.py[voice]>=2.5.0",
-    "discord-ext-voice-recv>=0.5.0",
+    "py-cord>=2.6.0",
     "openai>=1.0.0",
     "takopi>=0.17.0",
 ]

@@ -38,7 +38,7 @@ class CancelView(discord.ui.View):
         label="cancel", style=discord.ButtonStyle.secondary, custom_id=CANCEL_BUTTON_ID
     )
     async def cancel_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
+        self, button: discord.ui.Button, interaction: discord.Interaction
     ) -> None:
         if self._on_cancel is not None:
             await self._on_cancel(interaction)

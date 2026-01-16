@@ -407,7 +407,7 @@ async def run_main_loop(
 
                     # If @branch was used without a prompt, send confirmation and return
                     if not prompt.strip():
-                        thread_channel = cfg.bot.client.get_channel(thread_id)
+                        thread_channel = cfg.bot.bot.get_channel(thread_id)
                         if thread_channel and isinstance(
                             thread_channel, discord.Thread
                         ):
@@ -551,22 +551,26 @@ async def run_main_loop(
     cfg.bot.set_message_handler(handle_message)
 
     # Handle cancel button interactions
-    @cfg.bot.client.event
+    @cfg.bot.bot.event
     async def on_interaction(interaction: discord.Interaction) -> None:
-        if interaction.type != discord.InteractionType.component:
+        # Handle component interactions (buttons)
+        if interaction.type == discord.InteractionType.component:
+            if interaction.data:
+                custom_id = interaction.data.get("custom_id")
+                if custom_id == CANCEL_BUTTON_ID:
+                    # Get the channel where the cancel was clicked
+                    channel_id = interaction.channel_id
+                    if channel_id is not None:
+                        await cancel_task(channel_id)
+                    await interaction.response.defer()
             return
-        if not interaction.data:
-            return
-        custom_id = interaction.data.get("custom_id")
-        if custom_id == CANCEL_BUTTON_ID:
-            # Get the channel where the cancel was clicked
-            channel_id = interaction.channel_id
-            if channel_id is not None:
-                await cancel_task(channel_id)
-            await interaction.response.defer()
+
+        # For application commands, let Pycord handle them
+        # This is required when overriding on_interaction
+        await cfg.bot.bot.process_application_commands(interaction)
 
     # Auto-join new threads so we receive messages from them
-    @cfg.bot.client.event
+    @cfg.bot.bot.event
     async def on_thread_create(thread: discord.Thread) -> None:
         with contextlib.suppress(discord.HTTPException):
             await thread.join()
