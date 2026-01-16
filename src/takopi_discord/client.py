@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import discord
-from discord import app_commands
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -26,31 +25,42 @@ class SentMessage:
 
 
 class DiscordBotClient:
-    """Wrapper around discord.py client for takopi integration."""
+    """Wrapper around Pycord Bot for takopi integration."""
 
     def __init__(self, token: str, *, guild_id: int | None = None) -> None:
         self._token = token
         self._guild_id = guild_id
+        self._message_handler: MessageHandler | None = None
+        self._interaction_handler: InteractionHandler | None = None
+        # Defer bot creation until inside async context (Python 3.10+ compatibility)
+        self._bot: discord.Bot | None = None
+        self._ready_event: asyncio.Event | None = None
+
+    def _ensure_bot(self) -> discord.Bot:
+        """Create the bot if not already created. Must be called from async context."""
+        if self._bot is not None:
+            return self._bot
+
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
         intents.members = False
         # Required for receiving messages in threads
         intents.messages = True
-        # Required for voice channel functionality
-        intents.voice_states = True
-        self._client = discord.Client(intents=intents)
-        self._tree = app_commands.CommandTree(self._client)
+        # Use discord.Bot which has built-in slash command support
+        # debug_guilds ensures instant command sync to specific guilds
+        debug_guilds = [self._guild_id] if self._guild_id else None
+        self._bot = discord.Bot(intents=intents, debug_guilds=debug_guilds)
         self._ready_event = asyncio.Event()
-        self._message_handler: MessageHandler | None = None
-        self._interaction_handler: InteractionHandler | None = None
 
-        @self._client.event
+        @self._bot.event
         async def on_ready() -> None:
+            assert self._ready_event is not None
             self._ready_event.set()
 
-        @self._client.event
+        @self._bot.event
         async def on_message(message: discord.Message) -> None:
+            assert self._bot is not None
             # Debug: print to stdout to bypass any logging issues
             print(
                 f"[DEBUG on_message] channel={type(message.channel).__name__} id={message.channel.id} author={message.author.name} content={message.content[:30] if message.content else '(empty)'}",
@@ -66,7 +76,7 @@ class DiscordBotClient:
                 message.author.name,
                 message.content[:30] if message.content else "(empty)",
             )
-            if message.author == self._client.user:
+            if message.author == self._bot.user:
                 print("[DEBUG on_message] SKIPPED: bot's own message", flush=True)
                 return
             if self._message_handler is not None:
@@ -76,20 +86,35 @@ class DiscordBotClient:
             else:
                 print("[DEBUG on_message] NO message_handler set!", flush=True)
 
-    @property
-    def client(self) -> discord.Client:
-        """Get the underlying discord.py client."""
-        return self._client
+        @self._bot.event
+        async def on_application_command_error(
+            ctx: discord.ApplicationContext, error: Exception
+        ) -> None:
+            print(f"[DEBUG] Command error in /{ctx.command.name}: {type(error).__name__}: {error}", flush=True)
+            import traceback
+            traceback.print_exc()
+
+        @self._bot.event
+        async def on_application_command(ctx: discord.ApplicationContext) -> None:
+            print(f"[DEBUG] Command invoked: /{ctx.command.name}", flush=True)
+
+        @self._bot.event
+        async def on_interaction(interaction: discord.Interaction) -> None:
+            print(f"[DEBUG] Interaction received: type={interaction.type} data={interaction.data}", flush=True)
+
+        return self._bot
 
     @property
-    def tree(self) -> app_commands.CommandTree:
-        """Get the command tree for slash commands."""
-        return self._tree
+    def bot(self) -> discord.Bot:
+        """Get the underlying Pycord bot. Creates it if needed."""
+        return self._ensure_bot()
 
     @property
     def user(self) -> discord.User | None:
         """Get the bot user."""
-        return self._client.user
+        if self._bot is None:
+            return None
+        return self._bot.user
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Set the message handler."""
@@ -101,25 +126,36 @@ class DiscordBotClient:
 
     async def start(self) -> None:
         """Start the bot and wait until ready."""
-        asyncio.create_task(self._client.start(self._token))
+        bot = self._ensure_bot()
+        assert self._ready_event is not None
+
+        # Debug: print pending commands before starting
+        print(f"[DEBUG] Pending commands before start: {len(bot.pending_application_commands)}", flush=True)
+        for cmd in bot.pending_application_commands:
+            print(f"[DEBUG]   - {cmd.name}", flush=True)
+
+        asyncio.create_task(bot.start(self._token))
         await self._ready_event.wait()
-        # Sync commands
-        if self._guild_id is not None:
-            guild = discord.Object(id=self._guild_id)
-            self._tree.copy_global_to(guild=guild)
-            await self._tree.sync(guild=guild)
-            # Clear any stale global commands to avoid duplicates
-            self._tree.clear_commands(guild=None)
-            await self._tree.sync()
-        else:
-            await self._tree.sync()
+
+        # Debug: print pending commands after ready
+        print(f"[DEBUG] Pending commands after ready: {len(bot.pending_application_commands)}", flush=True)
+        for cmd in bot.pending_application_commands:
+            print(f"[DEBUG]   - {cmd.name}: {cmd.options}", flush=True)
+
+        # Pycord auto-syncs commands on_connect, so we don't need to manually sync.
+        # Manual sync was causing hangs. If guild-specific fast sync is needed,
+        # set debug_guilds on the Bot instead.
+        print("[DEBUG] Bot ready, commands should be auto-synced by Pycord", flush=True)
 
     async def close(self) -> None:
         """Close the bot connection."""
-        await self._client.close()
+        if self._bot is not None:
+            await self._bot.close()
 
     async def wait_until_ready(self) -> None:
         """Wait until the bot is ready."""
+        self._ensure_bot()
+        assert self._ready_event is not None
         await self._ready_event.wait()
 
     async def send_message(
@@ -133,10 +169,10 @@ class DiscordBotClient:
         embed: discord.Embed | None = None,
     ) -> SentMessage | None:
         """Send a message to a channel."""
-        channel = self._client.get_channel(thread_id or channel_id)
+        channel = self._bot.get_channel(thread_id or channel_id)
         if channel is None:
             try:
-                channel = await self._client.fetch_channel(thread_id or channel_id)
+                channel = await self._bot.fetch_channel(thread_id or channel_id)
             except discord.NotFound:
                 return None
 
@@ -194,10 +230,10 @@ class DiscordBotClient:
         embed: discord.Embed | None = None,
     ) -> SentMessage | None:
         """Edit an existing message."""
-        channel = self._client.get_channel(channel_id)
+        channel = self._bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await self._client.fetch_channel(channel_id)
+                channel = await self._bot.fetch_channel(channel_id)
             except discord.NotFound:
                 return None
 
@@ -227,10 +263,10 @@ class DiscordBotClient:
         message_id: int,
     ) -> bool:
         """Delete a message."""
-        channel = self._client.get_channel(channel_id)
+        channel = self._bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await self._client.fetch_channel(channel_id)
+                channel = await self._bot.fetch_channel(channel_id)
             except discord.NotFound:
                 return False
 
@@ -253,10 +289,10 @@ class DiscordBotClient:
         auto_archive_duration: int = 1440,  # 24 hours
     ) -> int | None:
         """Create a thread from a message."""
-        channel = self._client.get_channel(channel_id)
+        channel = self._bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await self._client.fetch_channel(channel_id)
+                channel = await self._bot.fetch_channel(channel_id)
             except discord.NotFound:
                 return None
 
@@ -277,11 +313,11 @@ class DiscordBotClient:
 
     def get_guild(self, guild_id: int) -> discord.Guild | None:
         """Get a guild by ID."""
-        return self._client.get_guild(guild_id)
+        return self._bot.get_guild(guild_id)
 
     def get_channel(self, channel_id: int) -> discord.abc.GuildChannel | None:
         """Get a channel by ID."""
-        channel = self._client.get_channel(channel_id)
+        channel = self._bot.get_channel(channel_id)
         if isinstance(channel, discord.abc.GuildChannel):
             return channel
         return None
