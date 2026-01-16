@@ -61,53 +61,10 @@ class DiscordBotClient:
         @self._bot.event
         async def on_message(message: discord.Message) -> None:
             assert self._bot is not None
-            # Debug: print to stdout to bypass any logging issues
-            print(
-                f"[DEBUG on_message] channel={type(message.channel).__name__} id={message.channel.id} author={message.author.name} content={message.content[:30] if message.content else '(empty)'}",
-                flush=True,
-            )
-            # Debug: log ALL incoming messages at the client level
-            import logging
-
-            logging.getLogger("takopi.discord.client").debug(
-                "on_message raw: channel_type=%s channel_id=%s author=%s content_preview=%s",
-                type(message.channel).__name__,
-                message.channel.id,
-                message.author.name,
-                message.content[:30] if message.content else "(empty)",
-            )
             if message.author == self._bot.user:
-                print("[DEBUG on_message] SKIPPED: bot's own message", flush=True)
                 return
             if self._message_handler is not None:
-                print("[DEBUG on_message] calling message_handler...", flush=True)
                 await self._message_handler(message)
-                print("[DEBUG on_message] message_handler returned", flush=True)
-            else:
-                print("[DEBUG on_message] NO message_handler set!", flush=True)
-
-        @self._bot.event
-        async def on_application_command_error(
-            ctx: discord.ApplicationContext, error: Exception
-        ) -> None:
-            print(
-                f"[DEBUG] Command error in /{ctx.command.name}: {type(error).__name__}: {error}",
-                flush=True,
-            )
-            import traceback
-
-            traceback.print_exc()
-
-        @self._bot.event
-        async def on_application_command(ctx: discord.ApplicationContext) -> None:
-            print(f"[DEBUG] Command invoked: /{ctx.command.name}", flush=True)
-
-        @self._bot.event
-        async def on_interaction(interaction: discord.Interaction) -> None:
-            print(
-                f"[DEBUG] Interaction received: type={interaction.type} data={interaction.data}",
-                flush=True,
-            )
 
         return self._bot
 
@@ -135,30 +92,8 @@ class DiscordBotClient:
         """Start the bot and wait until ready."""
         bot = self._ensure_bot()
         assert self._ready_event is not None
-
-        # Debug: print pending commands before starting
-        print(
-            f"[DEBUG] Pending commands before start: {len(bot.pending_application_commands)}",
-            flush=True,
-        )
-        for cmd in bot.pending_application_commands:
-            print(f"[DEBUG]   - {cmd.name}", flush=True)
-
         asyncio.create_task(bot.start(self._token))
         await self._ready_event.wait()
-
-        # Debug: print pending commands after ready
-        print(
-            f"[DEBUG] Pending commands after ready: {len(bot.pending_application_commands)}",
-            flush=True,
-        )
-        for cmd in bot.pending_application_commands:
-            print(f"[DEBUG]   - {cmd.name}: {cmd.options}", flush=True)
-
-        # Pycord auto-syncs commands on_connect, so we don't need to manually sync.
-        # Manual sync was causing hangs. If guild-specific fast sync is needed,
-        # set debug_guilds on the Bot instead.
-        print("[DEBUG] Bot ready, commands should be auto-synced by Pycord", flush=True)
 
     async def close(self) -> None:
         """Close the bot connection."""
