@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("takopi.discord.voice")
 
 # Audio processing constants
-SILENCE_THRESHOLD_MS = 500  # Time of silence before processing (0.5 seconds)
-MIN_AUDIO_DURATION_MS = 800  # Minimum audio duration to process (0.8 seconds)
+SILENCE_THRESHOLD_MS = 300  # Time of silence before processing (0.3 seconds)
+MIN_AUDIO_DURATION_MS = 500  # Minimum audio duration to process (0.5 seconds)
 SAMPLE_RATE = 48000  # Discord uses 48kHz
 CHANNELS = 2  # Stereo
 SAMPLE_WIDTH = 2  # 16-bit PCM
@@ -162,7 +162,8 @@ class VoiceManager:
         self._silence_check_task: asyncio.Task[None] | None = None
         self._message_handler: VoiceMessageHandler | None = None
         self._last_process_time: dict[int, float] = {}  # guild_id -> timestamp
-        self._process_cooldown_s = 3.0  # Minimum seconds between processing
+        self._process_cooldown_s = 1.0  # Minimum seconds between processing
+        self._is_responding: dict[int, bool] = {}  # guild_id -> is currently responding
 
     def set_message_handler(self, handler: VoiceMessageHandler) -> None:
         """Set the handler for processing transcribed voice messages."""
@@ -184,6 +185,10 @@ class VoiceManager:
 
     def _receive_audio(self, guild_id: int, user_id: int, data: bytes) -> None:
         """Receive audio data from a user (called from sink)."""
+        # Don't buffer audio while bot is responding - discard it
+        if self._is_responding.get(guild_id, False):
+            return
+
         key = (guild_id, user_id)
         if key not in self._audio_buffers:
             self._audio_buffers[key] = AudioBuffer(user_id=user_id)
@@ -305,6 +310,11 @@ class VoiceManager:
         if session is None:
             return
 
+        # Skip if already responding (shouldn't happen but just in case)
+        if self._is_responding.get(guild_id, False):
+            logger.debug("Skipping audio processing - already responding")
+            return
+
         # Check cooldown to prevent rapid-fire processing
         now = time.monotonic()
         last_time = self._last_process_time.get(guild_id, 0)
@@ -314,6 +324,14 @@ class VoiceManager:
 
         async with self._processing_lock:
             try:
+                # Mark as responding - stop buffering new audio
+                self._is_responding[guild_id] = True
+
+                # Clear any buffered audio that came in before we set the flag
+                keys_to_clear = [k for k in self._audio_buffers if k[0] == guild_id]
+                for key in keys_to_clear:
+                    self._audio_buffers[key].get_audio_and_clear()
+
                 # Update last process time
                 self._last_process_time[guild_id] = time.monotonic()
 
@@ -336,10 +354,7 @@ class VoiceManager:
 
                 logger.info("Transcribed from %s: %s", user_name, transcript)
 
-                # Say acknowledgment immediately
-                await self.speak(guild_id, "Let me think, one moment")
-
-                # Call the message handler
+                # Call the message handler (skip acknowledgment to reduce latency)
                 if self._message_handler is not None:
                     response = await self._message_handler(
                         guild_id,
@@ -356,6 +371,10 @@ class VoiceManager:
 
             except Exception:
                 logger.exception("Error processing voice audio")
+
+            finally:
+                # Done responding - start listening again
+                self._is_responding[guild_id] = False
 
     async def transcribe(self, audio: bytes) -> str:
         """Transcribe audio bytes to text using OpenAI Whisper."""
