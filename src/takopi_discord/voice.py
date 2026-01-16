@@ -24,11 +24,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("takopi.discord.voice")
 
 # Audio processing constants
-SILENCE_THRESHOLD_MS = 1500  # Time of silence before processing
-MIN_AUDIO_DURATION_MS = 500  # Minimum audio duration to process
+SILENCE_THRESHOLD_MS = 500  # Time of silence before processing (0.5 seconds)
+MIN_AUDIO_DURATION_MS = 800  # Minimum audio duration to process (0.8 seconds)
 SAMPLE_RATE = 48000  # Discord uses 48kHz
 CHANNELS = 2  # Stereo
 SAMPLE_WIDTH = 2  # 16-bit PCM
+SILENCE_AMPLITUDE_THRESHOLD = 500  # RMS amplitude below this is considered silence
 
 
 @dataclass
@@ -46,29 +47,60 @@ class VoiceSession:
 
 @dataclass
 class AudioBuffer:
-    """Buffers audio chunks and detects speech pauses."""
+    """Buffers audio chunks and detects speech pauses based on audio energy."""
 
     user_id: int
     chunks: list[bytes] = field(default_factory=list)
-    last_voice_time: float = 0.0
+    last_voice_time: float = 0.0  # Last time we received actual speech (not silence)
+    silence_start_time: float = 0.0  # When silence started
+    is_speaking: bool = False
     silence_threshold_ms: int = SILENCE_THRESHOLD_MS
+
+    def _calculate_rms(self, chunk: bytes) -> float:
+        """Calculate RMS (root mean square) amplitude of audio chunk."""
+        if len(chunk) < 2:
+            return 0.0
+        # Convert bytes to 16-bit samples
+        samples = struct.unpack(f"<{len(chunk) // 2}h", chunk)
+        if not samples:
+            return 0.0
+        # Calculate RMS
+        sum_squares = sum(s * s for s in samples)
+        return (sum_squares / len(samples)) ** 0.5
 
     def add_chunk(self, chunk: bytes) -> None:
         """Add an audio chunk to the buffer."""
         self.chunks.append(chunk)
-        self.last_voice_time = time.monotonic()
+
+        # Check if this chunk contains actual speech or silence
+        rms = self._calculate_rms(chunk)
+        now = time.monotonic()
+
+        if rms > SILENCE_AMPLITUDE_THRESHOLD:
+            # User is speaking
+            self.last_voice_time = now
+            self.is_speaking = True
+            self.silence_start_time = 0.0
+        elif self.is_speaking and self.silence_start_time == 0.0:
+            # Just went silent - mark the start of silence
+            self.silence_start_time = now
 
     def is_silence_detected(self) -> bool:
-        """Check if enough silence has passed to trigger processing."""
-        if not self.chunks:
+        """Check if user stopped speaking (silence after speech)."""
+        if not self.chunks or not self.is_speaking:
             return False
-        elapsed_ms = (time.monotonic() - self.last_voice_time) * 1000
+        if self.silence_start_time == 0.0:
+            return False
+        # Check if we've had enough silence after speech
+        elapsed_ms = (time.monotonic() - self.silence_start_time) * 1000
         return elapsed_ms >= self.silence_threshold_ms
 
     def get_audio_and_clear(self) -> bytes:
         """Get all buffered audio and clear the buffer."""
         audio = b"".join(self.chunks)
         self.chunks.clear()
+        self.is_speaking = False
+        self.silence_start_time = 0.0
         return audio
 
     def duration_ms(self) -> float:
@@ -129,6 +161,8 @@ class VoiceManager:
         self._processing_lock = asyncio.Lock()
         self._silence_check_task: asyncio.Task[None] | None = None
         self._message_handler: VoiceMessageHandler | None = None
+        self._last_process_time: dict[int, float] = {}  # guild_id -> timestamp
+        self._process_cooldown_s = 3.0  # Minimum seconds between processing
 
     def set_message_handler(self, handler: VoiceMessageHandler) -> None:
         """Set the handler for processing transcribed voice messages."""
@@ -249,7 +283,7 @@ class VoiceManager:
     async def _silence_check_loop(self) -> None:
         """Periodically check for silence and process audio."""
         while self._sessions:
-            await asyncio.sleep(0.1)  # Check every 100ms
+            await asyncio.sleep(0.05)  # Check every 50ms for faster response
 
             buffers_to_process: list[tuple[int, int, AudioBuffer]] = []
 
@@ -271,8 +305,18 @@ class VoiceManager:
         if session is None:
             return
 
+        # Check cooldown to prevent rapid-fire processing
+        now = time.monotonic()
+        last_time = self._last_process_time.get(guild_id, 0)
+        if now - last_time < self._process_cooldown_s:
+            logger.debug("Skipping audio processing - cooldown active")
+            return
+
         async with self._processing_lock:
             try:
+                # Update last process time
+                self._last_process_time[guild_id] = time.monotonic()
+
                 # Get user info
                 guild = self._bot.bot.get_guild(guild_id)
                 member = guild.get_member(user_id) if guild else None
@@ -284,7 +328,16 @@ class VoiceManager:
                     logger.debug("Empty transcript, skipping")
                     return
 
+                # Skip very short transcripts (likely noise or fragments)
+                words = transcript.strip().split()
+                if len(words) < 3:
+                    logger.debug("Transcript too short (%d words), skipping: %s", len(words), transcript)
+                    return
+
                 logger.info("Transcribed from %s: %s", user_name, transcript)
+
+                # Say acknowledgment immediately
+                await self.speak(guild_id, "Let me think, one moment")
 
                 # Call the message handler
                 if self._message_handler is not None:
@@ -297,7 +350,7 @@ class VoiceManager:
                         session.branch,
                     )
 
-                    # Synthesize and play response if we got one
+                    # Synthesize and play the final response if we got one
                     if response:
                         await self.speak(guild_id, response)
 
@@ -327,12 +380,14 @@ class VoiceManager:
     async def synthesize(self, text: str) -> bytes:
         """Synthesize text to speech using OpenAI TTS."""
         try:
+            logger.info("Synthesizing TTS for text: %s...", text[:50])
             response = await self._openai.audio.speech.create(
                 model=self._tts_model,
                 voice=self._tts_voice,
                 input=text,
                 response_format="opus",
             )
+            logger.info("TTS synthesis complete, %d bytes", len(response.content))
             return response.content
         except Exception:
             logger.exception("Error synthesizing speech")
@@ -341,12 +396,19 @@ class VoiceManager:
     async def speak(self, guild_id: int, text: str) -> None:
         """Synthesize and play text in the voice channel."""
         session = self._sessions.get(guild_id)
-        if session is None or not session.voice_client.is_connected():
+        if session is None:
+            logger.warning("speak: No session for guild %s", guild_id)
             return
+        if not session.voice_client.is_connected():
+            logger.warning("speak: Voice client not connected for guild %s", guild_id)
+            return
+
+        logger.info("speak: Starting TTS for guild %s", guild_id)
 
         # Synthesize speech
         audio = await self.synthesize(text)
         if not audio:
+            logger.warning("speak: No audio data from synthesis")
             return
 
         # Write to temp file for FFmpeg
@@ -354,18 +416,27 @@ class VoiceManager:
             f.write(audio)
             temp_path = Path(f.name)
 
+        logger.info("speak: Wrote %d bytes to %s", len(audio), temp_path)
+
         try:
             # Wait if already playing
             while session.voice_client.is_playing():
                 await asyncio.sleep(0.1)
 
             # Play the audio
+            logger.info("speak: Creating FFmpegOpusAudio source")
             source = discord.FFmpegOpusAudio(str(temp_path))
+            logger.info("speak: Playing audio")
             session.voice_client.play(source)
 
             # Wait for playback to finish
             while session.voice_client.is_playing():
                 await asyncio.sleep(0.1)
+
+            logger.info("speak: Playback complete")
+
+        except Exception:
+            logger.exception("speak: Error during playback")
 
         finally:
             # Clean up temp file
@@ -409,6 +480,14 @@ class VoiceManager:
         if session is None:
             return
 
+        logger.debug(
+            "Voice state update: member=%s, before=%s, after=%s, session_channel=%s",
+            member.name,
+            before.channel.id if before.channel else None,
+            after.channel.id if after.channel else None,
+            session.voice_channel_id,
+        )
+
         # Check if the bot was disconnected
         bot_user = self._bot.user
         bot_user_id = bot_user.id if bot_user else None
@@ -422,13 +501,25 @@ class VoiceManager:
             self._sessions.pop(guild_id, None)
             return
 
-        # Check if we should leave (channel is empty except for bot)
-        if before.channel and before.channel.id == session.voice_channel_id:
+        # Check if someone left our voice channel (not the bot itself)
+        if (
+            member.id != bot_user_id
+            and before.channel is not None
+            and before.channel.id == session.voice_channel_id
+            and (after.channel is None or after.channel.id != session.voice_channel_id)
+        ):
             # Someone left our channel, check if it's empty
-            voice_channel = self._bot.bot.get_channel(session.voice_channel_id)
+            # Use before.channel directly since it's the channel they left
+            voice_channel = before.channel
             if isinstance(voice_channel, discord.VoiceChannel):
-                # Count non-bot members
+                # Count non-bot members remaining in the channel
                 human_members = [m for m in voice_channel.members if not m.bot]
+                logger.debug(
+                    "Channel %s has %d human members remaining: %s",
+                    voice_channel.id,
+                    len(human_members),
+                    [m.name for m in human_members],
+                )
                 if not human_members:
                     logger.info("Voice channel empty, leaving guild %s", guild_id)
                     await self.leave_channel(guild_id)

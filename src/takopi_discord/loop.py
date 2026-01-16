@@ -616,7 +616,11 @@ async def run_main_loop(
             project: str,
             branch: str,
         ) -> str | None:
-            """Handle a transcribed voice message."""
+            """Handle a transcribed voice message.
+
+            Routes through Claude/takopi for full conversation context.
+            Says "Working on it" immediately, then TTS the final response.
+            """
             from takopi.context import RunContext
 
             logger.info(
@@ -632,40 +636,110 @@ async def run_main_loop(
             await transport.send(
                 channel_id=text_channel_id,
                 message=RenderedMessage(
-                    text=f"**{user_name}** (voice): {transcript}",
+                    text=f"🎤 **{user_name}**: {transcript}",
                     extra={},
                 ),
             )
 
-            # Build run context
-            run_context = RunContext(project=project, branch=branch)
+            # Say "Working on it" via TTS immediately
+            # Return this first, then process through Claude
+            # The final response will be captured via message listener
 
-            # Get resume token for the text channel
-            resume_token: ResumeToken | None = None
-            engine_id = cfg.runtime.default_engine or "claude"
-            token_str = await state_store.get_session(
-                guild_id, text_channel_id, engine_id
-            )
-            if token_str:
-                resume_token = ResumeToken(engine=engine_id, value=token_str)
+            # Set up a listener to capture the final response for TTS
+            final_response: list[str] = []
+            response_event = anyio.Event()
 
-            # Use run_job to process the voice message
-            import time
+            async def on_message(channel_id: int, text: str, is_final: bool) -> None:
+                if is_final and text:
+                    # Extract just the answer text from the formatted message
+                    # The format is typically: header + answer + footer
+                    # We want just the main content for TTS
+                    final_response.append(text)
+                    response_event.set()
 
-            voice_msg_id = int(time.time() * 1000)
+            # Register the listener
+            transport.add_message_listener(text_channel_id, on_message)
 
-            await run_job(
-                channel_id=text_channel_id,
-                user_msg_id=voice_msg_id,
-                text=transcript,
-                resume_token=resume_token,
-                context=run_context,
-                thread_id=None,
-                reply_ref=None,
-                guild_id=guild_id,
-            )
+            try:
+                # Build run context
+                run_context = RunContext(project=project, branch=branch)
 
-            # Return None for now - TTS response could be enhanced later
+                # Get resume token for the text channel
+                resume_token: ResumeToken | None = None
+                engine_id = cfg.runtime.default_engine or "claude"
+                token_str = await state_store.get_session(
+                    guild_id, text_channel_id, engine_id
+                )
+                if token_str:
+                    resume_token = ResumeToken(engine=engine_id, value=token_str)
+
+                # Use run_job to process the voice message through Claude
+                import time
+
+                voice_msg_id = int(time.time() * 1000)
+
+                # Run the job (this will send progress updates and final response)
+                await run_job(
+                    channel_id=text_channel_id,
+                    user_msg_id=voice_msg_id,
+                    text=transcript,
+                    resume_token=resume_token,
+                    context=run_context,
+                    thread_id=None,
+                    reply_ref=None,
+                    guild_id=guild_id,
+                )
+
+                # Wait briefly for the final response to be captured
+                with anyio.move_on_after(5.0):
+                    await response_event.wait()
+
+                if final_response:
+                    # Extract a TTS-friendly summary from the response
+                    response_text = final_response[0]
+
+                    # Strip markdown formatting for cleaner TTS
+                    import re
+
+                    # Remove the first line (status line like "✅ done · claude · 10s")
+                    lines = response_text.split("\n")
+                    response_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                    # Remove code blocks
+                    response_text = re.sub(r"```[\s\S]*?```", "", response_text)
+                    # Remove inline code
+                    response_text = re.sub(r"`[^`]+`", "", response_text)
+                    # Remove bold/italic markers
+                    response_text = re.sub(r"\*+([^*]+)\*+", r"\1", response_text)
+                    # Remove headers
+                    response_text = re.sub(r"^#+\s+", "", response_text, flags=re.MULTILINE)
+                    # Remove resume lines (e.g., "↩️ resume: ...")
+                    response_text = re.sub(r"^↩️.*$", "", response_text, flags=re.MULTILINE)
+                    # Clean up whitespace
+                    response_text = re.sub(r"\n{3,}", "\n\n", response_text).strip()
+
+                    # Truncate for TTS if too long (keep first ~500 chars)
+                    if len(response_text) > 500:
+                        response_text = response_text[:500] + "..."
+
+                    # Skip if nothing meaningful left after stripping
+                    if not response_text or len(response_text) < 5:
+                        return None
+
+                    logger.info(
+                        "voice.response",
+                        guild_id=guild_id,
+                        response_length=len(response_text),
+                    )
+
+                    return response_text
+
+            except Exception:
+                logger.exception("voice.response_error")
+
+            finally:
+                # Clean up the listener
+                transport.remove_message_listener(text_channel_id)
+
             return None
 
         voice_manager.set_message_handler(handle_voice_message)
