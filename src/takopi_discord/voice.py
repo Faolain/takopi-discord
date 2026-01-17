@@ -57,6 +57,7 @@ class AudioBuffer:
     user_id: int
     chunks: list[bytes] = field(default_factory=list)
     last_voice_time: float = 0.0  # Last time we received actual speech (not silence)
+    last_chunk_time: float = 0.0  # Last time we received any chunk (for push-to-talk)
     silence_start_time: float = 0.0  # When silence started
     is_speaking: bool = False
     silence_threshold_ms: int = SILENCE_THRESHOLD_MS
@@ -76,10 +77,11 @@ class AudioBuffer:
     def add_chunk(self, chunk: bytes) -> None:
         """Add an audio chunk to the buffer."""
         self.chunks.append(chunk)
+        now = time.monotonic()
+        self.last_chunk_time = now
 
         # Check if this chunk contains actual speech or silence
         rms = self._calculate_rms(chunk)
-        now = time.monotonic()
 
         if rms > SILENCE_AMPLITUDE_THRESHOLD:
             # User is speaking
@@ -91,14 +93,26 @@ class AudioBuffer:
             self.silence_start_time = now
 
     def is_silence_detected(self) -> bool:
-        """Check if user stopped speaking (silence after speech)."""
+        """Check if user stopped speaking (silence after speech or push-to-talk release)."""
         if not self.chunks or not self.is_speaking:
             return False
-        if self.silence_start_time == 0.0:
-            return False
-        # Check if we've had enough silence after speech
-        elapsed_ms = (time.monotonic() - self.silence_start_time) * 1000
-        return elapsed_ms >= self.silence_threshold_ms
+
+        now = time.monotonic()
+
+        # Check for silence in the audio stream (voice activity detection)
+        if self.silence_start_time > 0.0:
+            elapsed_ms = (now - self.silence_start_time) * 1000
+            if elapsed_ms >= self.silence_threshold_ms:
+                return True
+
+        # Check for push-to-talk: no new chunks received for threshold duration
+        # This handles the case where audio stream stops entirely
+        if self.last_chunk_time > 0.0:
+            chunk_gap_ms = (now - self.last_chunk_time) * 1000
+            if chunk_gap_ms >= self.silence_threshold_ms:
+                return True
+
+        return False
 
     def get_audio_and_clear(self) -> bytes:
         """Get all buffered audio and clear the buffer."""
