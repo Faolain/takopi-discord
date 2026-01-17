@@ -120,23 +120,20 @@ def register_slash_commands(
     @pycord_bot.slash_command(name="bind", description="Bind this channel to a project")
     async def bind_command(
         ctx: discord.ApplicationContext,
-        project: discord.Option(
-            str, description="The project path (e.g., ~/dev/myproject)"
+        project: str = discord.Option(
+            description="The project path (e.g., ~/dev/myproject)"
         ),
-        worktrees_dir: discord.Option(
-            str,
-            description="Directory for git worktrees (default: .worktrees)",
+        worktrees_dir: str = discord.Option(
             default=".worktrees",
+            description="Directory for git worktrees (default: .worktrees)",
         ),
-        default_engine: discord.Option(
-            str,
-            description="Default engine to use (default: claude)",
+        default_engine: str = discord.Option(
             default="claude",
+            description="Default engine to use (default: claude)",
         ),
-        worktree_base: discord.Option(
-            str,
-            description="Base branch for worktrees and default working branch (default: master)",
+        worktree_base: str = discord.Option(
             default="master",
+            description="Base branch for worktrees and default working branch (default: master)",
         ),
     ) -> None:
         """Bind a channel to a project."""
@@ -230,11 +227,10 @@ def register_slash_commands(
     )
     async def ctx_command(
         ctx: discord.ApplicationContext,
-        action: discord.Option(
-            str,
-            description="Action to perform",
+        action: str | None = discord.Option(
+            default=None,
+            description="Action to perform (show or clear)",
             choices=["show", "clear"],
-            default="show",
         ),
     ) -> None:
         """Show or clear context binding."""
@@ -305,7 +301,7 @@ def register_slash_commands(
             channel_id = ctx.channel.parent_id or ctx.channel_id
 
         # Get available engines
-        engines = list(runtime.engines.keys()) if runtime.engines else []
+        engines = list(runtime.engine_ids) if runtime.engine_ids else []
         if not engines:
             await ctx.respond("No engines configured.", ephemeral=True)
             return
@@ -344,15 +340,13 @@ def register_slash_commands(
     )
     async def model_command(
         ctx: discord.ApplicationContext,
-        engine: discord.Option(
-            str,
+        engine: str | None = discord.Option(
+            default=None,
             description="Engine to configure (e.g., claude, codex)",
-            required=False,
         ),
-        model: discord.Option(
-            str,
+        model: str | None = discord.Option(
+            default=None,
             description="Model to use (or 'clear' to remove override)",
-            required=False,
         ),
     ) -> None:
         """Show or set model override."""
@@ -416,15 +410,13 @@ def register_slash_commands(
     )
     async def reasoning_command(
         ctx: discord.ApplicationContext,
-        engine: discord.Option(
-            str,
+        engine: str | None = discord.Option(
+            default=None,
             description="Engine to configure (e.g., codex)",
-            required=False,
         ),
-        level: discord.Option(
-            str,
+        level: str | None = discord.Option(
+            default=None,
             description="Reasoning level (minimal/low/medium/high/xhigh) or 'clear'",
-            required=False,
         ),
     ) -> None:
         """Show or set reasoning level override."""
@@ -508,11 +500,10 @@ def register_slash_commands(
     )
     async def trigger_command(
         ctx: discord.ApplicationContext,
-        mode: discord.Option(
-            str,
+        mode: str | None = discord.Option(
+            default=None,
             description="Trigger mode: all, mentions, or clear",
             choices=["all", "mentions", "clear"],
-            required=False,
         ),
     ) -> None:
         """Show or set trigger mode."""
@@ -596,13 +587,11 @@ def register_slash_commands(
         )
         async def file_command(
             ctx: discord.ApplicationContext,
-            action: discord.Option(
-                str,
+            action: str = discord.Option(
                 description="Action: get (download) or put (upload)",
                 choices=["get", "put"],
             ),
-            path: discord.Option(
-                str,
+            path: str = discord.Option(
                 description="File path relative to upload directory",
             ),
         ) -> None:
