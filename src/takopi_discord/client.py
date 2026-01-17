@@ -135,6 +135,7 @@ class DiscordBotClient:
         thread_id: int | None = None,
         view: discord.ui.View | None = None,
         embed: discord.Embed | None = None,
+        suppress_embeds: bool = True,
     ) -> SentMessage | None:
         """Send a message to a channel."""
         channel = self._bot.get_channel(thread_id or channel_id)
@@ -157,7 +158,7 @@ class DiscordBotClient:
             )
 
         try:
-            kwargs: dict[str, Any] = {"content": content}
+            kwargs: dict[str, Any] = {"content": content, "suppress": suppress_embeds}
             if reference is not None:
                 kwargs["reference"] = reference
             if view is not None:
@@ -196,6 +197,7 @@ class DiscordBotClient:
         content: str,
         view: discord.ui.View | None = None,
         embed: discord.Embed | None = None,
+        suppress_embeds: bool = True,
     ) -> SentMessage | None:
         """Edit an existing message."""
         channel = self._bot.get_channel(channel_id)
@@ -210,7 +212,7 @@ class DiscordBotClient:
 
         try:
             message = await channel.fetch_message(message_id)
-            kwargs: dict[str, Any] = {"content": content}
+            kwargs: dict[str, Any] = {"content": content, "suppress": suppress_embeds}
             if view is not None:
                 kwargs["view"] = view
             if embed is not None:
