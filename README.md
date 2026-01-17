@@ -11,8 +11,11 @@ Maps Discord's structure to takopi's project/branch/session model:
 | Category | (organization) | Visual grouping |
 | Channel | Project | Repository context (bound via `/bind`) |
 | Thread | Branch / Session | Feature branch or session on base branch |
+| Voice Channel | Voice Session | Talk to the agent with speech |
 
 When you message in a channel, a thread is created. Use `@branch-name` prefix to work on a specific branch, otherwise it creates a session on the base branch (e.g., `master`).
+
+Voice channels can be created with `/voice` and are linked to a thread's project/branch context. The bot joins, listens, and responds with speech.
 
 ## Structure Example
 
