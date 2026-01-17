@@ -337,7 +337,9 @@ class DiscordBotClient:
                 except discord.HTTPException as retry_exc:
                     if retry_exc.status == 429:
                         retry_after = self._extract_retry_after(retry_exc)
-                        raise RetryAfter(retry_after, "Discord rate limit") from retry_exc
+                        raise RetryAfter(
+                            retry_after, "Discord rate limit"
+                        ) from retry_exc
                     return None
             return None
 
