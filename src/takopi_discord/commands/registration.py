@@ -152,9 +152,11 @@ async def _handle_plugin_command(
         engine_overrides_resolver=engine_overrides_resolver,
     )
 
-    # If dispatch didn't send anything, acknowledge completion
+    # Always send a followup to close the deferred interaction
+    # The plugin's actual response was sent via the transport to the channel
     if not handled:
         await ctx.followup.send(f"Command `/{command_id}` not found.", ephemeral=True)
-    elif not ctx.response.is_done():
-        # If the plugin didn't send a response, send a minimal acknowledgment
-        await ctx.followup.send("Done.", ephemeral=True)
+    else:
+        # Send an ephemeral acknowledgment to close the "thinking..." state
+        # The actual response is already in the channel from the plugin
+        await ctx.followup.send(f"✓ `/{command_id}` completed", ephemeral=True)
