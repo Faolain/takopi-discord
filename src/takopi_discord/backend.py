@@ -139,6 +139,8 @@ class DiscordBackend(TransportBackend):
             await run_main_loop(
                 cfg,
                 default_engine_override=default_engine_override,
+                config_path=config_path if runtime.watch_config else None,
+                transport_config=settings,
             )
 
         anyio.run(run_loop)

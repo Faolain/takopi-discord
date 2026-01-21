@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import discord
 
+from takopi.config_watch import ConfigReload, watch_config as watch_config_changes
 from takopi.logging import get_logger
 from takopi.markdown import MarkdownParts
 from takopi.model import ResumeToken
@@ -53,10 +55,18 @@ async def _send_startup(cfg: DiscordBridgeConfig, channel_id: int) -> None:
         logger.info("startup.sent", channel_id=channel_id)
 
 
+def _diff_keys(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    """Return sorted list of keys that differ between two dicts."""
+    keys = set(old) | set(new)
+    return sorted(key for key in keys if old.get(key) != new.get(key))
+
+
 async def run_main_loop(
     cfg: DiscordBridgeConfig,
     *,
     default_engine_override: str | None = None,
+    config_path: Path | None = None,
+    transport_config: dict[str, Any] | None = None,
 ) -> None:
     """Run the main Discord event loop."""
     running_tasks: RunningTasks = {}
@@ -797,8 +807,105 @@ async def run_main_loop(
 
     logger.info("bot.ready", user=cfg.bot.user.name if cfg.bot.user else "unknown")
 
-    # Keep running until cancelled
+    # Config file watching state
+    transport_snapshot: dict[str, Any] | None = (
+        dict(transport_config) if transport_config is not None else None
+    )
+    current_command_ids: set[str] = command_ids.copy() if command_ids else set()
+
+    def refresh_commands() -> set[str]:
+        """Refresh the set of discovered command IDs."""
+        nonlocal current_command_ids
+        new_ids = discover_command_ids(cfg.runtime.allowlist)
+        current_command_ids = new_ids
+        return new_ids
+
+    async def handle_reload(reload: ConfigReload) -> None:
+        """Handle config file reload."""
+        nonlocal transport_snapshot
+
+        # Refresh command IDs
+        old_command_ids = current_command_ids.copy()
+        new_command_ids = refresh_commands()
+
+        # Check for new commands that need registration
+        added_commands = new_command_ids - old_command_ids
+        removed_commands = old_command_ids - new_command_ids
+
+        if added_commands or removed_commands:
+            logger.info(
+                "config.reload.commands_changed",
+                added=sorted(added_commands) if added_commands else None,
+                removed=sorted(removed_commands) if removed_commands else None,
+            )
+
+            # Register new plugin commands
+            if added_commands:
+                register_plugin_commands(
+                    cfg.bot,
+                    cfg,
+                    command_ids=added_commands,
+                    running_tasks=running_tasks,
+                    state_store=state_store,
+                    default_engine_override=default_engine_override,
+                )
+
+            # Sync commands with Discord
+            # Note: removed commands won't be unregistered until bot restart
+            # because Pycord doesn't support dynamic command removal
+            try:
+                await cfg.bot.bot.sync_commands()
+                logger.info("config.reload.commands_synced")
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "config.reload.sync_failed",
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                )
+
+            if removed_commands:
+                logger.warning(
+                    "config.reload.commands_removed",
+                    commands=sorted(removed_commands),
+                    restart_required=True,
+                )
+
+        # Check for transport config changes
+        if transport_snapshot is not None:
+            new_snapshot = reload.settings.transports.get("discord")
+            if isinstance(new_snapshot, dict):
+                changed = _diff_keys(transport_snapshot, new_snapshot)
+                if changed:
+                    logger.warning(
+                        "config.reload.transport_config_changed",
+                        transport="discord",
+                        keys=changed,
+                        restart_required=True,
+                    )
+                    transport_snapshot = new_snapshot
+
+    watch_enabled = config_path is not None
+
+    async def run_with_watcher() -> None:
+        """Run the main loop with optional config watcher."""
+        async with anyio.create_task_group() as tg:
+            if watch_enabled and config_path is not None:
+
+                async def run_config_watch() -> None:
+                    await watch_config_changes(
+                        config_path=config_path,
+                        runtime=cfg.runtime,
+                        default_engine_override=default_engine_override,
+                        on_reload=handle_reload,
+                    )
+
+                tg.start_soon(run_config_watch)
+                logger.info("config.watch.started", path=str(config_path))
+
+            # Keep running until cancelled
+            await anyio.sleep_forever()
+
     try:
-        await anyio.sleep_forever()
+        await run_with_watcher()
     finally:
         await cfg.bot.close()
