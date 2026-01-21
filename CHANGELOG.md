@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-01-21
+
+### Added
+- **Auto File Upload**: Automatically upload Discord message attachments to the agent's incoming folder
+- **Config Hot-Reload**: Watch config file for changes and reload settings without restart
+
+### Fixed
+- Allow messages with only attachments (no text) to be processed
+
 ## [0.2.1] - 2026-01-21
 
 ### Changed
