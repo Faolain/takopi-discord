@@ -405,8 +405,9 @@ async def run_main_loop(
             if branch_override:
                 logger.info("branch.override", branch=branch_override)
 
-        # Allow empty prompt if @branch was used (thread will be created for future prompts)
-        if not prompt.strip() and not branch_override:
+        # Allow empty prompt if @branch was used or if there are attachments (for auto_put)
+        has_attachments = bool(message.attachments)
+        if not prompt.strip() and not branch_override and not has_attachments:
             return
 
         # Apply branch override to context
