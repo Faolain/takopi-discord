@@ -14,7 +14,12 @@ from takopi.runner_bridge import ExecBridgeConfig
 from takopi.transport_runtime import TransportRuntime
 from takopi.transports import SetupResult, TransportBackend
 
-from .bridge import DiscordBridgeConfig, DiscordPresenter, DiscordTransport
+from .bridge import (
+    DiscordBridgeConfig,
+    DiscordFilesSettings,
+    DiscordPresenter,
+    DiscordTransport,
+)
 from .client import DiscordBotClient
 from .loop import run_main_loop
 from .onboarding import check_setup, interactive_setup
@@ -108,7 +113,22 @@ class DiscordBackend(TransportBackend):
         message_overflow = settings.get("message_overflow", "split")
         session_mode = settings.get("session_mode", "stateless")
         show_resume_line = settings.get("show_resume_line", True)
-        upload_dir = settings.get("upload_dir")
+
+        # Parse files settings
+        files_settings = settings.get("files", {})
+        files_config = DiscordFilesSettings(
+            enabled=files_settings.get("enabled", False),
+            auto_put=files_settings.get("auto_put", True),
+            auto_put_mode=files_settings.get("auto_put_mode", "upload"),
+            uploads_dir=files_settings.get("uploads_dir", "incoming"),
+            max_upload_bytes=files_settings.get("max_upload_bytes", 20 * 1024 * 1024),
+            deny_globs=tuple(
+                files_settings.get(
+                    "deny_globs",
+                    [".git/**", ".env", ".envrc", "**/*.pem", "**/.ssh/**"],
+                )
+            ),
+        )
 
         startup_msg = _build_startup_message(
             runtime,
@@ -132,7 +152,7 @@ class DiscordBackend(TransportBackend):
             session_mode=session_mode,
             show_resume_line=show_resume_line,
             message_overflow=message_overflow,
-            upload_dir=upload_dir,
+            files=files_config,
         )
 
         async def run_loop() -> None:
