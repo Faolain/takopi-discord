@@ -269,22 +269,21 @@ async def save_attachment(
             error="upload path escapes the project root",
         )
 
-    # Check if file already exists
-    if target.exists():
-        if target.is_dir():
-            return SaveAttachmentResult(
-                rel_path=None,
-                size=None,
-                error=f"`{name}` is a directory",
-            )
-        # For auto_put, we overwrite existing files silently
-        # (unlike manual /file put which may want --force)
+    # Check if file already exists as a directory
+    if target.exists() and target.is_dir():
+        return SaveAttachmentResult(
+            rel_path=None,
+            size=None,
+            error=f"`{name}` is a directory",
+        )
+    # For auto_put, we overwrite existing files silently
+    # (unlike manual /file put which may want --force)
 
     # Download and save the file
     try:
         payload = await attachment.read()
         write_bytes_atomic(target, payload)
-    except Exception as e:
+    except OSError as e:
         return SaveAttachmentResult(
             rel_path=None,
             size=None,
