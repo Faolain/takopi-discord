@@ -364,6 +364,28 @@ class MediaGroupBuffer:
             return
 
 
+def _extract_engine_id_from_header(text: str | None) -> str | None:
+    """Extract engine id from a takopi status header line.
+
+    Header lines look like: "done · codex · 10s" (optionally with more parts).
+    """
+    if not text:
+        return None
+    first_line = text.splitlines()[0].strip()
+    if not first_line:
+        return None
+    if " · " in first_line:
+        parts = first_line.split(" · ")
+    elif "·" in first_line:
+        parts = [part.strip() for part in first_line.split("·")]
+    else:
+        return None
+    if len(parts) < 2:
+        return None
+    engine_id = parts[1].strip().strip("`")
+    return engine_id or None
+
+
 async def run_main_loop(
     cfg: DiscordBridgeConfig,
     *,
@@ -1008,6 +1030,33 @@ async def run_main_loop(
             engine_id = channel_context.default_engine
         else:
             engine_id = cfg.runtime.default_engine or "claude"
+
+        # If the user is replying to one of our messages, prefer the engine from that
+        # message header so reply chains continue the correct session/engine.
+        if message.reference and message.reference.message_id:
+            ref_msg: discord.Message | None = None
+            resolved = getattr(message.reference, "resolved", None)
+            if isinstance(resolved, discord.Message):
+                ref_msg = resolved
+            else:
+                with contextlib.suppress(discord.NotFound, discord.HTTPException):
+                    ref_msg = await message.channel.fetch_message(
+                        message.reference.message_id
+                    )
+
+            if (
+                ref_msg is not None
+                and cfg.bot.user is not None
+                and ref_msg.author == cfg.bot.user
+            ):
+                inferred = _extract_engine_id_from_header(ref_msg.content)
+                if inferred and inferred in cfg.runtime.engine_ids:
+                    engine_id = inferred
+                    logger.debug(
+                        "engine.inferred_from_reply",
+                        engine_id=engine_id,
+                        ref_message_id=ref_msg.id,
+                    )
 
         if state_store and guild_id:
             token_str = await state_store.get_session(guild_id, session_key, engine_id)
