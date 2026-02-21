@@ -1,6 +1,6 @@
 """Tests for handlers module."""
 
-from takopi_discord.handlers import parse_branch_prefix
+from takopi_discord.handlers import _format_engine_starter_message, parse_branch_prefix
 
 
 class TestParseBranchPrefix:
@@ -65,3 +65,16 @@ class TestParseBranchPrefix:
         branch, prompt = parse_branch_prefix("@issue-123/fix-bug/v2 do the thing")
         assert branch == "issue-123/fix-bug/v2"
         assert prompt == "do the thing"
+
+
+class TestFormatEngineStarterMessage:
+    def test_short_prompt(self) -> None:
+        assert (
+            _format_engine_starter_message("codex", "hi", max_chars=2000) == "/codex hi"
+        )
+
+    def test_truncates_with_ellipsis(self) -> None:
+        msg = _format_engine_starter_message("codex", "x" * 100, max_chars=20)
+        assert msg.startswith("/codex ")
+        assert msg.endswith("…")
+        assert len(msg) <= 20

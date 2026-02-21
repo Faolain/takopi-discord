@@ -498,6 +498,36 @@ class DiscordBotClient:
         except discord.HTTPException:
             return None
 
+    async def create_thread_without_message(
+        self,
+        *,
+        channel_id: int,
+        name: str,
+        auto_archive_duration: int = 1440,  # 24 hours
+    ) -> int | None:
+        """Create a thread without a starter message."""
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except discord.NotFound:
+                return None
+
+        if not isinstance(channel, discord.TextChannel):
+            return None
+
+        try:
+            thread = await channel.create_thread(
+                name=name,
+                message=None,
+                auto_archive_duration=auto_archive_duration,
+                type=discord.ChannelType.public_thread,
+            )
+            await thread.join()
+            return thread.id
+        except discord.HTTPException:
+            return None
+
     def get_guild(self, guild_id: int) -> discord.Guild | None:
         """Get a guild by ID."""
         return self._bot.get_guild(guild_id)
