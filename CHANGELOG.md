@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.4.0] - 2026-02-21
+
+### Added
+- Resume queueing for replies to running tasks
+- Buffer attachment bursts in threads
+- Separate Discord prefs store (`discord_prefs.json`)
+
+### Changed
+- Default worktree base to `main`
+- Ignore pre-startup messages to drain backlog
+
+### Fixed
+- Thread session continuity for `/engine` replies
+- Engine slash commands threading
+- Thread engine resolution for bound channels
+- Seed plugin slash commands with starter message
+
 ## [0.3.0] - 2026-01-21
 
 ### Added
