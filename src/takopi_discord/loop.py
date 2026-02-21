@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -278,6 +278,92 @@ class ResumeResolver:
         return ResumeDecision(resume_token=None, handled_by_running_task=False)
 
 
+@dataclass(frozen=True, slots=True)
+class _MediaItem:
+    message: discord.Message
+    prompt: str
+
+
+@dataclass(slots=True)
+class _MediaGroupState:
+    token: int = 0
+    items: list[_MediaItem] = field(default_factory=list)
+    guild_id: int | None = None
+    channel_id: int | None = None
+    thread_id: int | None = None
+    job_channel_id: int | None = None
+    engine_id: str | None = None
+    resume_token: ResumeToken | None = None
+    context: RunContext | None = None
+
+
+class MediaGroupBuffer:
+    def __init__(
+        self,
+        *,
+        task_group,
+        debounce_s: float,
+        dispatch: Callable[[_MediaGroupState], Awaitable[None]],
+        sleep: Callable[[float], Awaitable[None]] = anyio.sleep,
+    ) -> None:
+        self._task_group = task_group
+        self._debounce_s = float(debounce_s)
+        self._dispatch = dispatch
+        self._sleep = sleep
+        self._groups: dict[tuple[int, int], _MediaGroupState] = {}
+
+    def has_pending(self, *, channel_id: int, author_id: int) -> bool:
+        return (channel_id, author_id) in self._groups
+
+    def add(
+        self,
+        message: discord.Message,
+        *,
+        prompt: str,
+        guild_id: int,
+        channel_id: int,
+        thread_id: int | None,
+        job_channel_id: int,
+        engine_id: str,
+        resume_token: ResumeToken | None,
+        context: RunContext | None,
+    ) -> None:
+        author_id = getattr(message.author, "id", None)
+        if not isinstance(author_id, int):
+            return
+        key = (job_channel_id, author_id)
+        state = self._groups.get(key)
+        if state is None:
+            state = _MediaGroupState()
+            self._groups[key] = state
+            self._task_group.start_soon(self._flush, key)
+        state.items.append(_MediaItem(message=message, prompt=prompt))
+        state.token += 1
+        state.guild_id = guild_id
+        state.channel_id = channel_id
+        state.thread_id = thread_id
+        state.job_channel_id = job_channel_id
+        state.engine_id = engine_id
+        state.resume_token = resume_token
+        state.context = context
+
+    async def _flush(self, key: tuple[int, int]) -> None:
+        while True:
+            state = self._groups.get(key)
+            if state is None:
+                return
+            token = state.token
+            await self._sleep(self._debounce_s)
+            state = self._groups.get(key)
+            if state is None:
+                return
+            if state.token != token:
+                continue
+            del self._groups[key]
+            await self._dispatch(state)
+            return
+
+
 async def run_main_loop(
     cfg: DiscordBridgeConfig,
     *,
@@ -294,6 +380,7 @@ async def run_main_loop(
     _ = cast(DiscordTransport, cfg.exec_cfg.transport)  # Used for type checking only
     scheduler: ThreadScheduler | None = None
     resume_resolver: ResumeResolver | None = None
+    media_buffer: MediaGroupBuffer | None = None
 
     # Initialize voice manager if OpenAI API key is available (needed for TTS)
     # STT uses local Whisper via pywhispercpp
@@ -560,6 +647,126 @@ async def run_main_loop(
             guild_id=guild_id,
             run_options=run_options,
             progress_ref=job.progress_ref,
+        )
+
+    async def dispatch_media_group(state: _MediaGroupState) -> None:
+        if not state.items:
+            return
+        if (
+            state.guild_id is None
+            or state.channel_id is None
+            or state.job_channel_id is None
+        ):
+            return
+        if state.context is None or state.context.project is None:
+            return
+
+        ordered = sorted(state.items, key=lambda item: item.message.id)
+        command_item = next(
+            (item for item in ordered if item.prompt.strip()),
+            ordered[-1],
+        )
+        prompt_text = command_item.prompt.strip()
+
+        from takopi.config import ConfigError
+
+        from .file_transfer import format_bytes, save_attachment
+
+        try:
+            run_root = cfg.runtime.resolve_run_cwd(state.context)
+        except ConfigError as exc:
+            logger.warning("media_group.cwd_error", error=str(exc))
+            return
+        if run_root is None:
+            return
+
+        file_annotations: list[str] = []
+        saved_files: list[str] = []
+        failures: list[str] = []
+
+        for item in ordered:
+            for attachment in item.message.attachments:
+                result = await save_attachment(
+                    attachment,
+                    run_root,
+                    cfg.files.uploads_dir,
+                    cfg.files.deny_globs,
+                    max_bytes=cfg.files.max_upload_bytes,
+                )
+                if result.error is not None:
+                    failures.append(f"`{attachment.filename}` ({result.error})")
+                    continue
+                if result.rel_path is None or result.size is None:
+                    continue
+                file_annotations.append(
+                    f"[uploaded file: {result.rel_path.as_posix()}]"
+                )
+                saved_files.append(
+                    f"`{result.rel_path.as_posix()}` ({format_bytes(result.size)})"
+                )
+
+        if not saved_files:
+            return
+
+        # No prompt text provided: confirm the upload(s) and return.
+        if not prompt_text:
+            parts = MarkdownParts(header="saved " + ", ".join(saved_files))
+            text = prepare_discord(parts)
+            reply_to = MessageRef(
+                channel_id=state.job_channel_id,
+                message_id=command_item.message.id,
+                thread_id=state.thread_id,
+            )
+            await cfg.exec_cfg.transport.send(
+                channel_id=state.job_channel_id,
+                message=RenderedMessage(text=text, extra={"show_cancel": False}),
+                options=SendOptions(
+                    reply_to=reply_to, notify=False, thread_id=state.thread_id
+                ),
+            )
+            return
+
+        # Build prompt depending on auto_put_mode.
+        combined_prompt = prompt_text
+        if cfg.files.auto_put_mode == "prompt" and file_annotations:
+            combined_prompt = "\n".join(file_annotations) + "\n\n" + prompt_text
+
+        # Resolve model and reasoning overrides
+        engine_id = state.engine_id or (cfg.runtime.default_engine or "claude")
+        overrides = await resolve_overrides(
+            prefs_store,
+            state.guild_id,
+            state.channel_id,
+            state.thread_id,
+            engine_id,
+        )
+        run_options: EngineRunOptions | None = None
+        if overrides.model or overrides.reasoning:
+            run_options = EngineRunOptions(
+                model=overrides.model,
+                reasoning=overrides.reasoning,
+            )
+
+        # Include failures as a small preface if we can.
+        if failures:
+            combined_prompt = (
+                "[upload failures]\n"
+                + "\n".join(f"- {item}" for item in failures)
+                + "\n\n"
+                + combined_prompt
+            )
+
+        await run_job(
+            channel_id=state.job_channel_id,
+            user_msg_id=command_item.message.id,
+            text=combined_prompt,
+            resume_token=state.resume_token,
+            context=state.context,
+            engine_id=engine_id,
+            thread_id=state.thread_id,
+            reply_ref=None,
+            guild_id=state.guild_id,
+            run_options=run_options,
         )
 
     async def handle_message(message: discord.Message) -> None:
@@ -845,6 +1052,66 @@ async def run_main_loop(
             is_new_thread=is_new_thread,
             has_resume_token=resume_token is not None,
         )
+
+        # Buffer attachment-only bursts in existing threads to handle "media groups"
+        # (multiple file messages sent together).
+        if (
+            media_buffer is not None
+            and isinstance(message.channel, discord.Thread)
+            and thread_id is not None
+            and cfg.files.enabled
+            and cfg.files.auto_put
+            and run_context is not None
+            and run_context.project is not None
+        ):
+            author_id = getattr(message.author, "id", None)
+            if isinstance(author_id, int):
+                if message.attachments and not prompt.strip():
+                    media_buffer.add(
+                        message,
+                        prompt="",
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        thread_id=thread_id,
+                        job_channel_id=thread_id,
+                        engine_id=engine_id,
+                        resume_token=resume_token,
+                        context=run_context,
+                    )
+                    logger.debug(
+                        "media_group.buffered",
+                        thread_id=thread_id,
+                        author_id=author_id,
+                        message_id=message.id,
+                        attachment_count=len(message.attachments),
+                    )
+                    return
+                if (
+                    prompt.strip()
+                    and not message.attachments
+                    and media_buffer.has_pending(
+                        channel_id=thread_id, author_id=author_id
+                    )
+                ):
+                    media_buffer.add(
+                        message,
+                        prompt=prompt,
+                        guild_id=guild_id,
+                        channel_id=channel_id,
+                        thread_id=thread_id,
+                        job_channel_id=thread_id,
+                        engine_id=engine_id,
+                        resume_token=resume_token,
+                        context=run_context,
+                    )
+                    logger.debug(
+                        "media_group.prompt_attached",
+                        thread_id=thread_id,
+                        author_id=author_id,
+                        message_id=message.id,
+                        prompt_length=len(prompt),
+                    )
+                    return
 
         # Handle auto_put for file attachments
         logger.debug(
@@ -1269,7 +1536,7 @@ async def run_main_loop(
 
     async def run_with_watcher() -> None:
         """Run the main loop with optional config watcher."""
-        nonlocal scheduler, resume_resolver
+        nonlocal scheduler, resume_resolver, media_buffer
         async with anyio.create_task_group() as tg:
             scheduler = ThreadScheduler(task_group=tg, run_job=run_thread_job)
             resume_resolver = ResumeResolver(
@@ -1277,6 +1544,11 @@ async def run_main_loop(
                 task_group=tg,
                 running_tasks=running_tasks,
                 enqueue_resume=scheduler.enqueue_resume,
+            )
+            media_buffer = MediaGroupBuffer(
+                task_group=tg,
+                debounce_s=0.75,
+                dispatch=dispatch_media_group,
             )
 
             # Start the bot
