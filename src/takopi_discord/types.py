@@ -53,7 +53,7 @@ class DiscordChannelContext:
     project: str
     worktrees_dir: str = ".worktrees"
     default_engine: str = "claude"
-    worktree_base: str = "master"
+    worktree_base: str = "main"
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,7 +13,7 @@ Maps Discord's structure to takopi's project/branch/session model:
 | Thread | Branch / Session | Feature branch or session on base branch |
 | Voice Channel | Voice Session | Talk to the agent with speech |
 
-When you message in a channel, a thread is created. Use `@branch-name` prefix to work on a specific branch, otherwise it creates a session on the base branch (e.g., `master`).
+When you message in a channel, a thread is created. Use `@branch-name` prefix to work on a specific branch, otherwise it creates a session on the base branch (e.g., `main`).
 
 Voice channels can be created with `/voice` and are linked to a thread's project/branch context. The bot joins, listens, and responds with speech.
 
@@ -23,7 +23,7 @@ Voice channels can be created with `/voice` and are linked to a thread's project
 TAKOPI (category)
 ├── #main                 ← bound to ~/dev/takopi
 │   ├── feat/voice        ← thread on branch: feat/voice
-│   └── fix typo          ← session on master
+│   └── fix typo          ← session on main
 ├── #discord              ← bound to ~/dev/takopi-discord
 └── 🔊 Voice: feat/voice  ← voice channel linked to feat/voice thread
 ```
@@ -123,7 +123,7 @@ Start a conversation on a specific branch by prefixing with `@branch-name`:
 @issue-123 fix the bug
 ```
 
-This creates a new thread bound to the specified branch. Without a prefix, threads work on the base branch (e.g., `master`).
+This creates a new thread bound to the specified branch. Without a prefix, threads work on the base branch (e.g., `main`).
 
 ### Thread Sessions
 
