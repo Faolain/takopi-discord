@@ -143,7 +143,7 @@ class DiscordStateStore:
                     project=project,
                     worktrees_dir=ctx.get("worktrees_dir", ".worktrees"),
                     default_engine=ctx.get("default_engine", "claude"),
-                    worktree_base=ctx.get("worktree_base", "master"),
+                    worktree_base=ctx.get("worktree_base", "main"),
                 )
 
     async def set_context(

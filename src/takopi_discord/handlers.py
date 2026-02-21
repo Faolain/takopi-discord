@@ -134,8 +134,8 @@ def register_slash_commands(
             description="Default engine to use (default: claude)",
         ),
         worktree_base: str = discord.Option(
-            default="master",
-            description="Base branch for worktrees and default working branch (default: master)",
+            default="main",
+            description="Base branch for worktrees and default working branch (default: main)",
         ),
     ) -> None:
         """Bind a channel to a project."""
