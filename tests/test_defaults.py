@@ -45,4 +45,3 @@ async def test_state_store_defaults_worktree_base_to_main_when_missing(
     assert context is not None
     assert isinstance(context, DiscordChannelContext)
     assert context.worktree_base == "main"
-
