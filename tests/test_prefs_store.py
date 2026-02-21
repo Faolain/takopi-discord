@@ -61,4 +61,3 @@ async def test_migrates_legacy_prefs_from_state_file(tmp_path: Path) -> None:
 
     prefs_path = config_path.parent / "discord_prefs.json"
     assert prefs_path.exists()
-

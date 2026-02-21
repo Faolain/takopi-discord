@@ -386,4 +386,3 @@ def _coerce_str_map(value: object) -> dict[str, str] | None:
         if normalized:
             out[key] = normalized
     return out or None
-
