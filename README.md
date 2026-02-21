@@ -56,7 +56,8 @@ show_resume_line = true          # Show resume token in messages (default: true)
 upload_dir = "~/uploads"         # Optional: enable /file commands with this root dir
 ```
 
-State is automatically saved to `~/.takopi/discord_state.json`.
+State is automatically saved to `~/.takopi/discord_state.json`. Chat preferences
+(trigger mode, engine overrides) are stored in `~/.takopi/discord_prefs.json`.
 
 ## Setup
 

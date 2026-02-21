@@ -17,6 +17,7 @@ from .dispatch import dispatch_command
 if TYPE_CHECKING:
     from ..bridge import DiscordBridgeConfig
     from ..client import DiscordBotClient
+    from ..prefs import DiscordPrefsStore
     from ..state import DiscordStateStore
 
 logger = get_logger(__name__)
@@ -34,6 +35,7 @@ def register_plugin_commands(
     command_ids: set[str],
     running_tasks: RunningTasks,
     state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     default_engine_override: EngineId | None,
 ) -> None:
     """Register slash commands for discovered plugins.
@@ -43,7 +45,8 @@ def register_plugin_commands(
         cfg: Bridge configuration
         command_ids: Set of plugin command IDs to register
         running_tasks: Running tasks dictionary for cancellation
-        state_store: State store for resolving overrides
+        state_store: State store (context/sessions)
+        prefs_store: Preferences store for resolving overrides
         default_engine_override: Default engine override
     """
     pycord_bot = bot.bot
@@ -75,6 +78,7 @@ def register_plugin_commands(
                     cfg=cfg,
                     running_tasks=running_tasks,
                     state_store=state_store,
+                    prefs_store=prefs_store,
                     default_engine_override=default_engine_override,
                 )
 
@@ -92,6 +96,7 @@ async def _handle_plugin_command(
     cfg: DiscordBridgeConfig,
     running_tasks: RunningTasks,
     state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     default_engine_override: EngineId | None,
 ) -> None:
     """Handle a plugin slash command invocation."""
@@ -118,7 +123,7 @@ async def _handle_plugin_command(
         engine_id: EngineId,
     ) -> EngineRunOptions | None:
         overrides = await resolve_overrides(
-            state_store, guild_id, channel_id, thread_id, engine_id
+            prefs_store, guild_id, channel_id, thread_id, engine_id
         )
         if overrides.model or overrides.reasoning:
             return EngineRunOptions(

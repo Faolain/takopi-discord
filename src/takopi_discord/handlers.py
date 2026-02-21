@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from .bridge import DiscordBridgeConfig, DiscordFilesSettings
     from .client import DiscordBotClient
+    from .prefs import DiscordPrefsStore
     from .state import DiscordStateStore
     from .voice import VoiceManager
 
@@ -53,6 +54,7 @@ def register_slash_commands(
     bot: DiscordBotClient,
     *,
     state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     get_running_task: callable,
     cancel_task: callable,
     runtime: TransportRuntime | None = None,
@@ -182,6 +184,7 @@ def register_slash_commands(
         guild_id = ctx.guild.id
 
         await state_store.clear_channel(guild_id, channel_id)
+        await prefs_store.clear_channel(guild_id, channel_id)
         await ctx.respond("Channel binding removed.", ephemeral=True)
 
     @pycord_bot.slash_command(
@@ -309,7 +312,7 @@ def register_slash_commands(
         # Resolve default engine
         config_default = runtime.default_engine
         default_engine, source = await resolve_default_engine(
-            state_store, guild_id, channel_id, thread_id, config_default
+            prefs_store, guild_id, channel_id, thread_id, config_default
         )
 
         lines = ["**Available Agents**"]
@@ -322,7 +325,7 @@ def register_slash_commands(
 
         # Show any overrides
         overrides = await resolve_overrides(
-            state_store, guild_id, channel_id, thread_id, default_engine or engines[0]
+            prefs_store, guild_id, channel_id, thread_id, default_engine or engines[0]
         )
         if overrides.model or overrides.reasoning:
             lines.append("\n**Overrides**")
@@ -367,7 +370,7 @@ def register_slash_commands(
 
         # Show current overrides
         if engine is None:
-            model_overrides, _, _, _ = await state_store.get_all_overrides(
+            model_overrides, _, _, _ = await prefs_store.get_all_overrides(
                 guild_id, target_id
             )
             if not model_overrides:
@@ -385,19 +388,19 @@ def register_slash_commands(
                 return
 
             if model.lower() == "clear":
-                await state_store.set_model_override(guild_id, target_id, engine, None)
+                await prefs_store.set_model_override(guild_id, target_id, engine, None)
                 await ctx.respond(
                     f"Model override cleared for `{engine}`.", ephemeral=True
                 )
             else:
-                await state_store.set_model_override(guild_id, target_id, engine, model)
+                await prefs_store.set_model_override(guild_id, target_id, engine, model)
                 await ctx.respond(
                     f"Model override set for `{engine}`: `{model}`", ephemeral=True
                 )
             return
 
         # Show override for specific engine
-        current = await state_store.get_model_override(guild_id, target_id, engine)
+        current = await prefs_store.get_model_override(guild_id, target_id, engine)
         if current:
             await ctx.respond(
                 f"Model override for `{engine}`: `{current}`", ephemeral=True
@@ -437,7 +440,7 @@ def register_slash_commands(
 
         # Show current overrides
         if engine is None:
-            _, reasoning_overrides, _, _ = await state_store.get_all_overrides(
+            _, reasoning_overrides, _, _ = await prefs_store.get_all_overrides(
                 guild_id, target_id
             )
             if not reasoning_overrides:
@@ -455,7 +458,7 @@ def register_slash_commands(
                 return
 
             if level.lower() == "clear":
-                await state_store.set_reasoning_override(
+                await prefs_store.set_reasoning_override(
                     guild_id, target_id, engine, None
                 )
                 await ctx.respond(
@@ -477,7 +480,7 @@ def register_slash_commands(
                 )
                 return
 
-            await state_store.set_reasoning_override(
+            await prefs_store.set_reasoning_override(
                 guild_id, target_id, engine, level.lower()
             )
             await ctx.respond(
@@ -487,7 +490,7 @@ def register_slash_commands(
             return
 
         # Show override for specific engine
-        current = await state_store.get_reasoning_override(guild_id, target_id, engine)
+        current = await prefs_store.get_reasoning_override(guild_id, target_id, engine)
         if current:
             await ctx.respond(
                 f"Reasoning override for `{engine}`: `{current}`", ephemeral=True
@@ -526,9 +529,9 @@ def register_slash_commands(
         # Show current mode
         if mode is None:
             current = await resolve_trigger_mode(
-                state_store, guild_id, channel_id, thread_id
+                prefs_store, guild_id, channel_id, thread_id
             )
-            stored = await state_store.get_trigger_mode(guild_id, target_id)
+            stored = await prefs_store.get_trigger_mode(guild_id, target_id)
             if stored:
                 await ctx.respond(
                     f"Trigger mode: `{current}` (set on this {'thread' if thread_id else 'channel'})",
@@ -545,10 +548,10 @@ def register_slash_commands(
             return
 
         if mode == "clear":
-            await state_store.set_trigger_mode(guild_id, target_id, None)
+            await prefs_store.set_trigger_mode(guild_id, target_id, None)
             await ctx.respond("Trigger mode cleared (using default).", ephemeral=True)
         else:
-            await state_store.set_trigger_mode(guild_id, target_id, mode)
+            await prefs_store.set_trigger_mode(guild_id, target_id, mode)
             mode_desc = (
                 "respond to all messages"
                 if mode == "all"
@@ -866,6 +869,7 @@ def register_engine_commands(
     *,
     cfg: DiscordBridgeConfig,
     state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     running_tasks: RunningTasks,
     default_engine_override: str | None = None,
 ) -> list[str]:
@@ -877,7 +881,8 @@ def register_engine_commands(
     Args:
         bot: The Discord bot client
         cfg: Bridge configuration
-        state_store: State store for resolving context and overrides
+        state_store: State store for resolving context
+        prefs_store: Preferences store for overrides
         running_tasks: Running tasks dictionary
         default_engine_override: Default engine override
 
@@ -911,6 +916,7 @@ def register_engine_commands(
                     prompt=prompt,
                     cfg=cfg,
                     state_store=state_store,
+                    prefs_store=prefs_store,
                     running_tasks=running_tasks,
                 )
 
@@ -930,6 +936,7 @@ async def _handle_engine_command(
     prompt: str,
     cfg: DiscordBridgeConfig,
     state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     running_tasks: RunningTasks,
 ) -> None:
     """Handle a dynamic engine slash command invocation."""
@@ -985,7 +992,7 @@ async def _handle_engine_command(
 
     # Resolve model and reasoning overrides for this engine
     overrides = await resolve_overrides(
-        state_store, guild_id, channel_id, thread_id, engine_id
+        prefs_store, guild_id, channel_id, thread_id, engine_id
     )
     run_options: EngineRunOptions | None = None
     if overrides.model or overrides.reasoning:
