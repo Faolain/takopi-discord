@@ -30,6 +30,7 @@ from .handlers import (
     should_process_message,
 )
 from .overrides import resolve_overrides, resolve_trigger_mode
+from .prefs import DiscordPrefsStore
 from .render import prepare_discord
 from .state import DiscordStateStore
 from .types import DiscordChannelContext, DiscordThreadContext
@@ -73,6 +74,8 @@ async def run_main_loop(
     startup_cutoff = datetime.now(UTC)
     running_tasks: RunningTasks = {}
     state_store = DiscordStateStore(cfg.runtime.config_path)
+    prefs_store = DiscordPrefsStore(cfg.runtime.config_path)
+    await prefs_store.ensure_loaded()
     _ = cast(DiscordTransport, cfg.exec_cfg.transport)  # Used for type checking only
 
     # Initialize voice manager if OpenAI API key is available (needed for TTS)
@@ -123,6 +126,7 @@ async def run_main_loop(
     register_slash_commands(
         cfg.bot,
         state_store=state_store,
+        prefs_store=prefs_store,
         get_running_task=get_running_task,
         cancel_task=cancel_task,
         runtime=cfg.runtime,
@@ -135,6 +139,7 @@ async def run_main_loop(
         cfg.bot,
         cfg=cfg,
         state_store=state_store,
+        prefs_store=prefs_store,
         running_tasks=running_tasks,
         default_engine_override=default_engine_override,
     )
@@ -159,6 +164,7 @@ async def run_main_loop(
             command_ids=command_ids,
             running_tasks=running_tasks,
             state_store=state_store,
+            prefs_store=prefs_store,
             default_engine_override=default_engine_override,
         )
     else:
@@ -377,7 +383,7 @@ async def run_main_loop(
 
         # Check trigger mode - may skip processing if mentions-only and not mentioned
         trigger_mode = await resolve_trigger_mode(
-            state_store, guild_id, channel_id, thread_id
+            prefs_store, guild_id, channel_id, thread_id
         )
         if trigger_mode == "mentions":
             # Check if bot is mentioned or if this is a reply to the bot
@@ -658,7 +664,7 @@ async def run_main_loop(
 
         # Resolve model and reasoning overrides
         overrides = await resolve_overrides(
-            state_store, guild_id, channel_id, thread_id, engine_id
+            prefs_store, guild_id, channel_id, thread_id, engine_id
         )
         run_options: EngineRunOptions | None = None
         if overrides.model or overrides.reasoning:
@@ -933,6 +939,7 @@ async def run_main_loop(
                     command_ids=added_commands,
                     running_tasks=running_tasks,
                     state_store=state_store,
+                    prefs_store=prefs_store,
                     default_engine_override=default_engine_override,
                 )
 

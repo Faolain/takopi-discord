@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .state import DiscordStateStore
+    from .prefs import DiscordPrefsStore
 
 # Valid reasoning levels (matching telegram transport)
 REASONING_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
@@ -29,7 +29,7 @@ class ResolvedOverrides:
 
 
 async def resolve_overrides(
-    state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     guild_id: int,
     channel_id: int,
     thread_id: int | None,
@@ -49,14 +49,14 @@ async def resolve_overrides(
 
     # Check thread overrides first (if in a thread)
     if thread_id is not None:
-        thread_model = await state_store.get_model_override(
+        thread_model = await prefs_store.get_model_override(
             guild_id, thread_id, engine_id
         )
         if thread_model is not None:
             model = thread_model
             source_model = "thread"
 
-        thread_reasoning = await state_store.get_reasoning_override(
+        thread_reasoning = await prefs_store.get_reasoning_override(
             guild_id, thread_id, engine_id
         )
         if thread_reasoning is not None:
@@ -65,7 +65,7 @@ async def resolve_overrides(
 
     # Fall back to channel overrides
     if model is None:
-        channel_model = await state_store.get_model_override(
+        channel_model = await prefs_store.get_model_override(
             guild_id, channel_id, engine_id
         )
         if channel_model is not None:
@@ -73,7 +73,7 @@ async def resolve_overrides(
             source_model = "channel"
 
     if reasoning is None:
-        channel_reasoning = await state_store.get_reasoning_override(
+        channel_reasoning = await prefs_store.get_reasoning_override(
             guild_id, channel_id, engine_id
         )
         if channel_reasoning is not None:
@@ -89,7 +89,7 @@ async def resolve_overrides(
 
 
 async def resolve_trigger_mode(
-    state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     guild_id: int,
     channel_id: int,
     thread_id: int | None,
@@ -103,12 +103,12 @@ async def resolve_trigger_mode(
     """
     # Check thread first
     if thread_id is not None:
-        thread_mode = await state_store.get_trigger_mode(guild_id, thread_id)
+        thread_mode = await prefs_store.get_trigger_mode(guild_id, thread_id)
         if thread_mode is not None:
             return thread_mode
 
     # Fall back to channel
-    channel_mode = await state_store.get_trigger_mode(guild_id, channel_id)
+    channel_mode = await prefs_store.get_trigger_mode(guild_id, channel_id)
     if channel_mode is not None:
         return channel_mode
 
@@ -117,7 +117,7 @@ async def resolve_trigger_mode(
 
 
 async def resolve_default_engine(
-    state_store: DiscordStateStore,
+    prefs_store: DiscordPrefsStore,
     guild_id: int,
     channel_id: int,
     thread_id: int | None,
@@ -134,12 +134,12 @@ async def resolve_default_engine(
     """
     # Check thread first
     if thread_id is not None:
-        thread_engine = await state_store.get_default_engine(guild_id, thread_id)
+        thread_engine = await prefs_store.get_default_engine(guild_id, thread_id)
         if thread_engine is not None:
             return thread_engine, "thread"
 
     # Fall back to channel
-    channel_engine = await state_store.get_default_engine(guild_id, channel_id)
+    channel_engine = await prefs_store.get_default_engine(guild_id, channel_id)
     if channel_engine is not None:
         return channel_engine, "channel"
 
