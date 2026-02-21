@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -15,9 +17,11 @@ from takopi.config_watch import ConfigReload, watch_config as watch_config_chang
 from takopi.logging import get_logger
 from takopi.markdown import MarkdownParts
 from takopi.model import ResumeToken
+from takopi.progress import ProgressTracker
 from takopi.runner_bridge import RunningTasks
+from takopi.scheduler import ThreadJob, ThreadScheduler
 from takopi.runners.run_options import EngineRunOptions, apply_run_options
-from takopi.transport import MessageRef, RenderedMessage
+from takopi.transport import MessageRef, RenderedMessage, SendOptions
 
 from .bridge import CANCEL_BUTTON_ID, DiscordBridgeConfig, DiscordTransport
 from .commands import discover_command_ids, register_plugin_commands
@@ -75,6 +79,205 @@ async def _save_session_token(
     await state_store.set_session(guild_id, session_key, token.engine, token.value)
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeDecision:
+    resume_token: ResumeToken | None
+    handled_by_running_task: bool
+
+
+async def _wait_for_resume(running_task) -> ResumeToken | None:
+    if running_task.resume is not None:
+        return running_task.resume
+    resume: ResumeToken | None = None
+
+    async with anyio.create_task_group() as tg:
+
+        async def wait_resume() -> None:
+            nonlocal resume
+            await running_task.resume_ready.wait()
+            resume = running_task.resume
+            tg.cancel_scope.cancel()
+
+        async def wait_done() -> None:
+            await running_task.done.wait()
+            tg.cancel_scope.cancel()
+
+        tg.start_soon(wait_resume)
+        tg.start_soon(wait_done)
+
+    return resume
+
+
+async def _send_plain_reply(
+    cfg: DiscordBridgeConfig,
+    *,
+    channel_id: int,
+    user_msg_id: int,
+    thread_id: int | None,
+    text: str,
+) -> None:
+    parts = MarkdownParts(header=text)
+    rendered_text = prepare_discord(parts)
+    reply_ref = MessageRef(
+        channel_id=channel_id,
+        message_id=user_msg_id,
+        thread_id=thread_id,
+    )
+    await cfg.exec_cfg.transport.send(
+        channel_id=channel_id,
+        message=RenderedMessage(text=rendered_text, extra={"show_cancel": False}),
+        options=SendOptions(reply_to=reply_ref, notify=False, thread_id=thread_id),
+    )
+
+
+async def _send_queued_progress(
+    cfg: DiscordBridgeConfig,
+    *,
+    channel_id: int,
+    user_msg_id: int,
+    thread_id: int | None,
+    resume_token: ResumeToken,
+    context: RunContext | None,
+) -> MessageRef | None:
+    tracker = ProgressTracker(engine=resume_token.engine)
+    tracker.set_resume(resume_token)
+    context_line = cfg.runtime.format_context_line(context)
+    state = tracker.snapshot(context_line=context_line)
+    queued = cfg.exec_cfg.presenter.render_progress(
+        state,
+        elapsed_s=0.0,
+        label="queued",
+    )
+    message = RenderedMessage(
+        text=queued.text,
+        extra={**queued.extra, "show_cancel": False},
+    )
+    reply_ref = MessageRef(
+        channel_id=channel_id,
+        message_id=user_msg_id,
+        thread_id=thread_id,
+    )
+    return await cfg.exec_cfg.transport.send(
+        channel_id=channel_id,
+        message=message,
+        options=SendOptions(reply_to=reply_ref, notify=False, thread_id=thread_id),
+    )
+
+
+async def send_with_resume(
+    cfg: DiscordBridgeConfig,
+    enqueue: Callable[
+        [
+            int,
+            int,
+            str,
+            ResumeToken,
+            RunContext | None,
+            int | None,
+            tuple[int, int | None] | None,
+            MessageRef | None,
+        ],
+        Awaitable[None],
+    ],
+    running_task,
+    channel_id: int,
+    user_msg_id: int,
+    thread_id: int | None,
+    session_key: tuple[int, int | None] | None,
+    text: str,
+) -> None:
+    resume = await _wait_for_resume(running_task)
+    if resume is None:
+        await _send_plain_reply(
+            cfg,
+            channel_id=channel_id,
+            user_msg_id=user_msg_id,
+            thread_id=thread_id,
+            text="resume token not ready yet; try replying to the final message.",
+        )
+        return
+    progress_ref = await _send_queued_progress(
+        cfg,
+        channel_id=channel_id,
+        user_msg_id=user_msg_id,
+        thread_id=thread_id,
+        resume_token=resume,
+        context=running_task.context,
+    )
+    await enqueue(
+        channel_id,
+        user_msg_id,
+        text,
+        resume,
+        running_task.context,
+        thread_id,
+        session_key,
+        progress_ref,
+    )
+
+
+class ResumeResolver:
+    def __init__(
+        self,
+        *,
+        cfg: DiscordBridgeConfig,
+        task_group,
+        running_tasks: Mapping[MessageRef, object],
+        enqueue_resume: Callable[
+            [
+                int,
+                int,
+                str,
+                ResumeToken,
+                RunContext | None,
+                int | None,
+                tuple[int, int | None] | None,
+                MessageRef | None,
+            ],
+            Awaitable[None],
+        ],
+    ) -> None:
+        self._cfg = cfg
+        self._task_group = task_group
+        self._running_tasks = running_tasks
+        self._enqueue_resume = enqueue_resume
+
+    async def resolve(
+        self,
+        *,
+        resume_token: ResumeToken | None,
+        reply_id: int | None,
+        chat_id: int,
+        user_msg_id: int,
+        thread_id: int | None,
+        session_key: tuple[int, int | None] | None,
+        prompt_text: str,
+    ) -> ResumeDecision:
+        if resume_token is not None:
+            return ResumeDecision(
+                resume_token=resume_token,
+                handled_by_running_task=False,
+            )
+        if reply_id is not None:
+            running_task = self._running_tasks.get(
+                MessageRef(channel_id=chat_id, message_id=reply_id)
+            )
+            if running_task is not None:
+                self._task_group.start_soon(
+                    send_with_resume,
+                    self._cfg,
+                    self._enqueue_resume,
+                    running_task,
+                    chat_id,
+                    user_msg_id,
+                    thread_id,
+                    session_key,
+                    prompt_text,
+                )
+                return ResumeDecision(resume_token=None, handled_by_running_task=True)
+        return ResumeDecision(resume_token=None, handled_by_running_task=False)
+
+
 async def run_main_loop(
     cfg: DiscordBridgeConfig,
     *,
@@ -89,6 +292,8 @@ async def run_main_loop(
     prefs_store = DiscordPrefsStore(cfg.runtime.config_path)
     await prefs_store.ensure_loaded()
     _ = cast(DiscordTransport, cfg.exec_cfg.transport)  # Used for type checking only
+    scheduler: ThreadScheduler | None = None
+    resume_resolver: ResumeResolver | None = None
 
     # Initialize voice manager if OpenAI API key is available (needed for TTS)
     # STT uses local Whisper via pywhispercpp
@@ -193,6 +398,7 @@ async def run_main_loop(
         reply_ref: MessageRef | None = None,
         guild_id: int | None = None,
         run_options: EngineRunOptions | None = None,
+        progress_ref: MessageRef | None = None,
     ) -> None:
         """Run an engine job."""
         from takopi.config import ConfigError
@@ -262,7 +468,7 @@ async def run_main_loop(
 
                 # Callback to save the resume token when it becomes known
                 async def on_thread_known(
-                    new_token: ResumeToken, _event: anyio.Event
+                    new_token: ResumeToken, done: anyio.Event
                 ) -> None:
                     logger.debug(
                         "on_thread_known.called",
@@ -295,6 +501,8 @@ async def run_main_loop(
                             has_state_store=state_store is not None,
                             guild_id=guild_id,
                         )
+                    if scheduler is not None:
+                        await scheduler.note_thread_known(new_token, done)
 
                 with apply_run_options(run_options):
                     await takopi_handle_message(
@@ -307,6 +515,7 @@ async def run_main_loop(
                         strip_resume_line=cfg.runtime.is_resume_line,
                         running_tasks=running_tasks,
                         on_thread_known=on_thread_known,
+                        progress_ref=progress_ref,
                     )
                 logger.info("run_job.complete", channel_id=channel_id)
             finally:
@@ -315,6 +524,43 @@ async def run_main_loop(
             logger.exception("run_job.error", channel_id=channel_id)
         finally:
             clear_context()
+
+    async def run_thread_job(job: ThreadJob) -> None:
+        guild_id: int | None = None
+        parent_channel_id: int | None = None
+        if job.session_key is not None:
+            guild_id = job.session_key[0]
+            parent_channel_id = job.session_key[1]
+
+        engine_id = job.resume_token.engine
+        run_options: EngineRunOptions | None = None
+        if guild_id is not None:
+            overrides = await resolve_overrides(
+                prefs_store,
+                guild_id,
+                parent_channel_id or cast(int, job.chat_id),
+                cast(int | None, job.thread_id),
+                engine_id,
+            )
+            if overrides.model or overrides.reasoning:
+                run_options = EngineRunOptions(
+                    model=overrides.model,
+                    reasoning=overrides.reasoning,
+                )
+
+        await run_job(
+            channel_id=cast(int, job.chat_id),
+            user_msg_id=cast(int, job.user_msg_id),
+            text=job.text,
+            resume_token=job.resume_token,
+            context=job.context,
+            engine_id=engine_id,
+            thread_id=cast(int | None, job.thread_id),
+            reply_ref=None,
+            guild_id=guild_id,
+            run_options=run_options,
+            progress_ref=job.progress_ref,
+        )
 
     async def handle_message(message: discord.Message) -> None:
         """Handle an incoming Discord message."""
@@ -677,6 +923,51 @@ async def run_main_loop(
         # For existing threads/channels, thread_id already specifies where to send
         job_channel_id = thread_id if thread_id else channel_id
 
+        # Replies to a running task's progress message should be queued until the
+        # current task's resume token is ready, then executed with full context.
+        # Also queue any message that resumes an existing thread to avoid
+        # overlapping runs for the same conversation.
+        session_meta: tuple[int, int | None] = (guild_id, channel_id)
+        if resume_resolver is not None:
+            reply_id = (
+                message.reference.message_id
+                if message.reference and message.reference.message_id
+                else None
+            )
+            decision = await resume_resolver.resolve(
+                resume_token=resume_token,
+                reply_id=reply_id,
+                chat_id=job_channel_id,
+                user_msg_id=message.id,
+                thread_id=thread_id,
+                session_key=session_meta,
+                prompt_text=prompt,
+            )
+            if decision.handled_by_running_task:
+                return
+            resume_token = decision.resume_token
+
+        if resume_token is not None and scheduler is not None:
+            progress_ref = await _send_queued_progress(
+                cfg,
+                channel_id=job_channel_id,
+                user_msg_id=message.id,
+                thread_id=thread_id,
+                resume_token=resume_token,
+                context=run_context,
+            )
+            await scheduler.enqueue_resume(
+                job_channel_id,
+                message.id,
+                prompt,
+                resume_token,
+                run_context,
+                thread_id,
+                session_meta,
+                progress_ref,
+            )
+            return
+
         # Resolve model and reasoning overrides
         overrides = await resolve_overrides(
             prefs_store, guild_id, channel_id, thread_id, engine_id
@@ -893,29 +1184,6 @@ async def run_main_loop(
 
         voice_manager.set_message_handler(handle_voice_message)
 
-    # Start the bot
-    await cfg.bot.start()
-
-    # Send startup message to configured channel or first available text channel
-    if cfg.guild_id:
-        startup_channel_id = await state_store.get_startup_channel(cfg.guild_id)
-        if startup_channel_id:
-            await _send_startup(cfg, startup_channel_id)
-            logger.info("startup.configured_channel", channel_id=startup_channel_id)
-        else:
-            guild = cfg.bot.get_guild(cfg.guild_id)
-            if guild:
-                for channel in guild.text_channels:
-                    await _send_startup(cfg, channel.id)
-                    logger.info(
-                        "startup.first_channel",
-                        channel_id=channel.id,
-                        hint="mention bot in preferred channel to set as startup channel",
-                    )
-                    break
-
-    logger.info("bot.ready", user=cfg.bot.user.name if cfg.bot.user else "unknown")
-
     # Config file watching state
     transport_snapshot: dict[str, Any] | None = (
         dict(transport_config) if transport_config is not None else None
@@ -1001,7 +1269,43 @@ async def run_main_loop(
 
     async def run_with_watcher() -> None:
         """Run the main loop with optional config watcher."""
+        nonlocal scheduler, resume_resolver
         async with anyio.create_task_group() as tg:
+            scheduler = ThreadScheduler(task_group=tg, run_job=run_thread_job)
+            resume_resolver = ResumeResolver(
+                cfg=cfg,
+                task_group=tg,
+                running_tasks=running_tasks,
+                enqueue_resume=scheduler.enqueue_resume,
+            )
+
+            # Start the bot
+            await cfg.bot.start()
+
+            # Send startup message to configured channel or first available text channel
+            if cfg.guild_id:
+                startup_channel_id = await state_store.get_startup_channel(cfg.guild_id)
+                if startup_channel_id:
+                    await _send_startup(cfg, startup_channel_id)
+                    logger.info(
+                        "startup.configured_channel", channel_id=startup_channel_id
+                    )
+                else:
+                    guild = cfg.bot.get_guild(cfg.guild_id)
+                    if guild:
+                        for channel in guild.text_channels:
+                            await _send_startup(cfg, channel.id)
+                            logger.info(
+                                "startup.first_channel",
+                                channel_id=channel.id,
+                                hint="mention bot in preferred channel to set as startup channel",
+                            )
+                            break
+
+            logger.info(
+                "bot.ready", user=cfg.bot.user.name if cfg.bot.user else "unknown"
+            )
+
             if watch_enabled and config_path is not None:
 
                 async def run_config_watch() -> None:
