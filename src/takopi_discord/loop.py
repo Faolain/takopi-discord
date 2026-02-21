@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -69,6 +70,7 @@ async def run_main_loop(
     transport_config: dict[str, Any] | None = None,
 ) -> None:
     """Run the main Discord event loop."""
+    startup_cutoff = datetime.now(UTC)
     running_tasks: RunningTasks = {}
     state_store = DiscordStateStore(cfg.runtime.config_path)
     _ = cast(DiscordTransport, cfg.exec_cfg.transport)  # Used for type checking only
@@ -306,6 +308,16 @@ async def run_main_loop(
         # Guild-only: ignore DMs
         if message.guild is None:
             logger.debug("message.skipped", reason="not in guild (DM)")
+            return
+
+        # Drain startup backlog: ignore messages sent before this bot instance started.
+        if message.created_at < startup_cutoff:
+            logger.debug(
+                "message.skipped",
+                reason="startup_backlog",
+                created_at=str(message.created_at),
+                startup_cutoff=str(startup_cutoff),
+            )
             return
 
         if not should_process_message(message, cfg.bot.user, require_mention=False):
