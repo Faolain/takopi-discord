@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import discord
 
 from takopi.commands import get_command, list_command_ids
 from takopi.logging import get_logger
-from takopi.model import EngineId
+from takopi.model import EngineId, ResumeToken
 from takopi.runner_bridge import RunningTasks
 from takopi.runners.run_options import EngineRunOptions
 
@@ -26,6 +27,20 @@ logger = get_logger(__name__)
 def discover_command_ids(allowlist: set[str] | None) -> set[str]:
     """Discover available command plugin IDs."""
     return {cmd_id.lower() for cmd_id in list_command_ids(allowlist=allowlist)}
+
+
+def _format_plugin_starter_message(
+    command_id: str,
+    args_text: str,
+    *,
+    max_chars: int = 2000,
+) -> str:
+    """Format a starter message for a plugin slash command."""
+    full = f"/{command_id} {args_text}".strip()
+    if len(full) <= max_chars:
+        return full
+    slice_len = max(0, max_chars - 1)
+    return full[:slice_len] + "…"
 
 
 def register_plugin_commands(
@@ -100,14 +115,16 @@ async def _handle_plugin_command(
     default_engine_override: EngineId | None,
 ) -> None:
     """Handle a plugin slash command invocation."""
+    import anyio
+
     from ..overrides import resolve_overrides
 
     if ctx.guild is None:
         await ctx.respond("This command can only be used in a server.", ephemeral=True)
         return
 
-    # Defer to give us time to process
-    await ctx.defer()
+    # Defer quickly, then run in background so the interaction doesn't time out.
+    await ctx.defer(ephemeral=True)
 
     guild_id = ctx.guild.id
     channel_id = ctx.channel_id
@@ -135,33 +152,58 @@ async def _handle_plugin_command(
     # Build full text as it would appear in a message
     full_text = f"/{command_id} {args_text}".strip()
 
-    # For slash commands, we don't have a real message ID yet
-    # Use 0 as a placeholder - the executor will handle this
-    message_id = 0
+    # Seed with a real message so command replies/progress can reply reliably.
+    effective_channel_id = thread_id or channel_id
+    starter_msg = await cfg.bot.send_message(
+        channel_id=effective_channel_id,
+        content=_format_plugin_starter_message(command_id, args_text),
+    )
+    if starter_msg is None:
+        await ctx.followup.send(
+            f"Failed to post in <#{effective_channel_id}>.",
+            ephemeral=True,
+        )
+        return
 
-    # Dispatch to the plugin
-    handled = await dispatch_command(
-        cfg,
-        command_id=command_id,
-        args_text=args_text,
-        full_text=full_text,
-        channel_id=thread_id or channel_id,  # Send to thread if in one
-        message_id=message_id,
-        guild_id=guild_id,
-        thread_id=thread_id,
-        reply_ref=None,  # Slash commands don't have a message to reply to
-        reply_text=None,
-        running_tasks=running_tasks,
-        on_thread_known=None,  # We don't track sessions for plugin commands
-        default_engine_override=default_engine_override,
-        engine_overrides_resolver=engine_overrides_resolver,
+    message_id = starter_msg.message_id
+    session_key = thread_id if thread_id is not None else channel_id
+
+    async def on_thread_known(new_token: ResumeToken, _event: anyio.Event) -> None:
+        await state_store.set_session(
+            guild_id,
+            session_key,
+            new_token.engine,
+            new_token.value,
+        )
+
+    async def run_command_job() -> None:
+        handled = await dispatch_command(
+            cfg,
+            command_id=command_id,
+            args_text=args_text,
+            full_text=full_text,
+            channel_id=effective_channel_id,
+            message_id=message_id,
+            guild_id=guild_id,
+            thread_id=thread_id,
+            reply_ref=None,  # Slash commands don't have a message to reply to
+            reply_text=None,
+            running_tasks=running_tasks,
+            on_thread_known=on_thread_known,
+            default_engine_override=default_engine_override,
+            engine_overrides_resolver=engine_overrides_resolver,
+        )
+        if not handled:
+            await cfg.bot.send_message(
+                channel_id=effective_channel_id,
+                content=f"Command `/{command_id}` not found.",
+            )
+
+    asyncio.create_task(
+        run_command_job(),
+        name=f"takopi-discord:plugin:{command_id}:{effective_channel_id}",
     )
 
-    # Always send a followup to close the deferred interaction
-    # The plugin's actual response was sent via the transport to the channel
-    if not handled:
-        await ctx.followup.send(f"Command `/{command_id}` not found.", ephemeral=True)
-    else:
-        # Send an ephemeral acknowledgment to close the "thinking..." state
-        # The actual response is already in the channel from the plugin
-        await ctx.followup.send(f"✓ `/{command_id}` completed", ephemeral=True)
+    # Close the deferred interaction promptly; command output goes to the channel/thread.
+    target = f"<#{effective_channel_id}>"
+    await ctx.followup.send(f"Started `/{command_id}` in {target}.", ephemeral=True)
