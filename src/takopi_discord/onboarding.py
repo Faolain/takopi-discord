@@ -371,7 +371,8 @@ async def interactive_setup(*, force: bool) -> bool:
         console.print(f"  config saved to {_display_path(config_path)}")
 
         done_panel = Panel(
-            "setup complete. run 'takopi run' to start takopi-discord!\n\n"
+            "setup complete. run 'takopi' (or 'takopi --transport discord') "
+            "to start takopi-discord!\n\n"
             "tip: the first channel you message the bot in will become\n"
             "the startup channel where status messages are posted.",
             border_style="green",

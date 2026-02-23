@@ -6,7 +6,7 @@ Implements cascading override resolution: thread -> channel -> config default ->
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .prefs import DiscordPrefsStore
@@ -93,13 +93,15 @@ async def resolve_trigger_mode(
     guild_id: int,
     channel_id: int,
     thread_id: int | None,
-) -> str:
+    *,
+    default_mode: Literal["all", "mentions"] = "all",
+) -> Literal["all", "mentions"]:
     """Resolve trigger mode with cascading precedence.
 
     Resolution order (first match wins):
     1. Thread trigger mode (if in a thread)
     2. Channel trigger mode
-    3. Default: "all"
+    3. Config default
     """
     # Check thread first
     if thread_id is not None:
@@ -113,7 +115,7 @@ async def resolve_trigger_mode(
         return channel_mode
 
     # Default
-    return "all"
+    return default_mode
 
 
 async def resolve_default_engine(

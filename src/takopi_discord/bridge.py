@@ -151,6 +151,7 @@ class DiscordBridgeConfig:
     session_mode: Literal["stateless", "chat"] = "stateless"
     show_resume_line: bool = True
     message_overflow: Literal["trim", "split"] = "split"
+    trigger_mode_default: Literal["all", "mentions"] = "all"
     files: DiscordFilesSettings = DiscordFilesSettings()
 
 
