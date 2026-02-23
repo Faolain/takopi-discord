@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .history import (
+    SUMMARY_WINDOW_CHOICES,
+    build_summary_prompt,
+    fetch_recent_history,
+    normalize_summary_window,
+)
 from .overrides import (
     REASONING_LEVELS,
     is_valid_reasoning_level,
@@ -54,10 +60,12 @@ async def _require_admin(ctx: discord.ApplicationContext) -> bool:
 def register_slash_commands(
     bot: DiscordBotClient,
     *,
+    bridge_cfg: DiscordBridgeConfig | None = None,
     state_store: DiscordStateStore,
     prefs_store: DiscordPrefsStore,
     get_running_task: callable,
     cancel_task: callable,
+    running_tasks: RunningTasks | None = None,
     runtime: TransportRuntime | None = None,
     files: DiscordFilesSettings | None = None,
     voice_manager: VoiceManager | None = None,
@@ -227,6 +235,217 @@ def register_slash_commands(
 
         await state_store.clear_sessions(guild_id, channel_id)
         await ctx.respond("Session cleared. Starting fresh.", ephemeral=True)
+
+    @pycord_bot.slash_command(
+        name="summary",
+        description="Summarize recent messages in this channel/thread",
+    )
+    async def summary_command(
+        ctx: discord.ApplicationContext,
+        window: str = discord.Option(
+            default="7d",
+            description="How far back to summarize",
+            choices=list(SUMMARY_WINDOW_CHOICES),
+        ),
+        max_messages: int = discord.Option(
+            default=200,
+            description="Maximum messages to include (10-500)",
+        ),
+        include_bots: bool = discord.Option(
+            default=False,
+            description="Include bot messages in the summary",
+        ),
+        focus: str | None = discord.Option(
+            default=None,
+            description="Optional focus area/question for the summary",
+        ),
+    ) -> None:
+        """Summarize recent conversation history in the current channel/thread."""
+        from takopi.context import RunContext
+        from takopi.logging import get_logger
+        from takopi.runners.run_options import EngineRunOptions
+        from takopi.transport import MessageRef
+
+        from .commands.executor import _run_engine
+        from .types import DiscordChannelContext, DiscordThreadContext
+
+        logger = get_logger(__name__)
+
+        if ctx.guild is None:
+            await ctx.respond(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+        if runtime is None or bridge_cfg is None or running_tasks is None:
+            await ctx.respond("Runtime not available.", ephemeral=True)
+            return
+        if max_messages < 10 or max_messages > 500:
+            await ctx.respond(
+                "max_messages must be between 10 and 500.",
+                ephemeral=True,
+            )
+            return
+
+        await ctx.defer(ephemeral=True)
+
+        guild_id = ctx.guild.id
+        channel_id = ctx.channel_id
+        thread_id: int | None = None
+
+        if isinstance(ctx.channel, discord.Thread):
+            thread_id = ctx.channel_id
+            if ctx.channel.parent_id:
+                channel_id = ctx.channel.parent_id
+
+        effective_channel_id = thread_id or channel_id
+        normalized_window = normalize_summary_window(window)
+
+        if not hasattr(ctx.channel, "history"):
+            await ctx.followup.send(
+                "This channel does not support history lookup.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            history = await fetch_recent_history(
+                ctx.channel,
+                window=normalized_window,
+                max_messages=max_messages,
+                include_bots=include_bots,
+            )
+        except discord.Forbidden:
+            await ctx.followup.send(
+                "Missing permission to read message history in this channel/thread.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            logger.warning(
+                "summary.history_fetch_failed",
+                guild_id=guild_id,
+                channel_id=effective_channel_id,
+                error=str(exc),
+            )
+            await ctx.followup.send(
+                "Failed to fetch message history from Discord.",
+                ephemeral=True,
+            )
+            return
+
+        if not history:
+            await ctx.followup.send(
+                f"No messages found in the last `{normalized_window}`.",
+                ephemeral=True,
+            )
+            return
+
+        run_context: RunContext | None = None
+        if thread_id is not None:
+            thread_ctx = await state_store.get_context(guild_id, thread_id)
+            if isinstance(thread_ctx, DiscordThreadContext):
+                run_context = RunContext(
+                    project=thread_ctx.project,
+                    branch=thread_ctx.branch,
+                )
+
+        if run_context is None:
+            channel_ctx = await state_store.get_context(guild_id, channel_id)
+            if isinstance(channel_ctx, DiscordChannelContext):
+                run_context = RunContext(
+                    project=channel_ctx.project,
+                    branch=channel_ctx.worktree_base,
+                )
+
+        config_default_engine = runtime.default_engine
+        engine_id, _ = await resolve_default_engine(
+            prefs_store,
+            guild_id,
+            channel_id,
+            thread_id,
+            config_default_engine,
+        )
+        effective_engine = engine_id or config_default_engine
+
+        overrides = await resolve_overrides(
+            prefs_store,
+            guild_id,
+            channel_id,
+            thread_id,
+            effective_engine,
+        )
+        run_options: EngineRunOptions | None = None
+        if overrides.model or overrides.reasoning:
+            run_options = EngineRunOptions(
+                model=overrides.model,
+                reasoning=overrides.reasoning,
+            )
+
+        prompt = build_summary_prompt(
+            history,
+            window=normalized_window,
+            focus=focus,
+        )
+
+        starter_msg = await bot.send_message(
+            channel_id=effective_channel_id,
+            content=_format_summary_starter_message(
+                window=normalized_window,
+                max_messages=max_messages,
+                include_bots=include_bots,
+                focus=focus,
+            ),
+        )
+        if starter_msg is None:
+            await ctx.followup.send(
+                f"Failed to start summary in <#{effective_channel_id}>.",
+                ephemeral=True,
+            )
+            return
+
+        logger.info(
+            "summary.run",
+            guild_id=guild_id,
+            channel_id=effective_channel_id,
+            thread_id=thread_id,
+            engine=effective_engine,
+            window=normalized_window,
+            include_bots=include_bots,
+            fetched_messages=len(history),
+        )
+
+        async def run_summary_job() -> None:
+            await _run_engine(
+                exec_cfg=bridge_cfg.exec_cfg,
+                runtime=runtime,
+                running_tasks=running_tasks,
+                channel_id=effective_channel_id,
+                user_msg_id=starter_msg.message_id,
+                text=prompt,
+                resume_token=None,
+                context=run_context,
+                reply_ref=MessageRef(
+                    channel_id=effective_channel_id,
+                    message_id=starter_msg.message_id,
+                    thread_id=thread_id,
+                ),
+                on_thread_known=None,
+                engine_override=effective_engine,
+                thread_id=thread_id,
+                show_resume_line=bridge_cfg.show_resume_line,
+                run_options=run_options,
+            )
+
+        asyncio.create_task(
+            run_summary_job(),
+            name=f"takopi-discord:summary:{effective_channel_id}",
+        )
+
+        target = f"<#{thread_id}>" if thread_id is not None else f"<#{channel_id}>"
+        await ctx.followup.send(
+            f"Started `/summary` in {target} (window `{normalized_window}`, {len(history)} messages).",
+            ephemeral=True,
+        )
 
     @pycord_bot.slash_command(name="ctx", description="Show or manage context binding")
     async def ctx_command(
@@ -941,6 +1160,26 @@ def _format_engine_starter_message(
         return prefix + prompt
     slice_len = max(0, max_chars - len(prefix) - 1)
     return prefix + prompt[:slice_len] + "…"
+
+
+def _format_summary_starter_message(
+    *,
+    window: str,
+    max_messages: int,
+    include_bots: bool,
+    focus: str | None,
+    max_chars: int = 2000,
+) -> str:
+    focus_text = (focus or "").strip()
+    bots_part = "with bots" if include_bots else "without bots"
+    base = (
+        f"/summary window={window} max_messages={max_messages} {bots_part}"
+        if not focus_text
+        else f"/summary window={window} max_messages={max_messages} {bots_part} focus={focus_text}"
+    )
+    if len(base) <= max_chars:
+        return base
+    return base[: max_chars - 1] + "…"
 
 
 async def _handle_engine_command(

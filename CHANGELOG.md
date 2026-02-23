@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Built-in `/summary` slash command for channel/thread history summaries (default `7d` window)
+
 ## [0.4.0] - 2026-02-21
 
 ### Added

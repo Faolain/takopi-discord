@@ -451,10 +451,12 @@ async def run_main_loop(
     # Register built-in slash commands (reserved commands)
     register_slash_commands(
         cfg.bot,
+        bridge_cfg=cfg,
         state_store=state_store,
         prefs_store=prefs_store,
         get_running_task=get_running_task,
         cancel_task=cancel_task,
+        running_tasks=running_tasks,
         runtime=cfg.runtime,
         files=cfg.files,
         voice_manager=voice_manager,
