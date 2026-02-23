@@ -4,8 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-23
+
 ### Added
 - Configurable trigger mode fallback via `transports.discord.trigger_mode_default`
+
+### Fixed
+- Docs: fix uv tool install and onboarding command guidance
 
 ## [0.4.0] - 2026-02-21
 
