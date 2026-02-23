@@ -31,10 +31,10 @@ TAKOPI (category)
 ## Installation
 
 ```bash
-# Install takopi-discord
-pip install takopi-discord
+# Recommended: install into the takopi tool environment
+uv tool install -U takopi --with takopi-discord
 
-# Or with uv
+# If you're already inside a project virtual environment
 uv pip install takopi-discord
 
 # Verify the transport is loaded
@@ -64,8 +64,19 @@ State is automatically saved to `~/.takopi/discord_state.json`. Chat preferences
 1. Create a Discord application at https://discord.com/developers/applications
 2. Create a bot and copy the token
 3. Enable "Message Content Intent" under Privileged Gateway Intents
-4. Run `takopi setup` and follow the prompts
+4. Run `takopi --onboard --transport discord` and follow the prompts
 5. Invite the bot to your server using the generated URL
+
+## Troubleshooting
+
+- `error: No virtual environment found; run uv venv to create an environment, or pass --system ...`
+  - This happens when `uv pip install ...` is run outside a project venv.
+  - If you installed Takopi with `uv tool install`, install this plugin with:
+    - `uv tool install -U takopi --with takopi-discord`
+- `Error: No such command 'setup'`
+  - `takopi setup` is not a core command in current Takopi.
+  - Use onboarding via:
+    - `takopi --onboard --transport discord`
 
 ## Slash Commands
 
