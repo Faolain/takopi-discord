@@ -53,6 +53,7 @@ guild_id = 123456789             # Optional: restrict bot to single server
 message_overflow = "split"       # "split" (default) or "trim" for long messages
 session_mode = "stateless"       # "stateless" (default) or "chat"
 show_resume_line = true          # Show resume token in messages (default: true)
+trigger_mode_default = "all"     # "all" (default) or "mentions" for inherited trigger mode
 upload_dir = "~/uploads"         # Optional: enable /file commands with this root dir
 ```
 
@@ -141,6 +142,8 @@ Control when the bot responds:
 - **mentions**: Only respond when @mentioned or replied to
 
 Set per-channel or per-thread with `/trigger`.
+Set the inherited fallback for new channels/threads with `trigger_mode_default` in
+`[transports.discord]`.
 
 ## Discord Bot Permissions Required
 

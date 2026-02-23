@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from takopi_discord.overrides import resolve_trigger_mode
+from takopi_discord.prefs import DiscordPrefsStore
 from takopi_discord.state import DiscordStateStore
 from takopi_discord.types import DiscordChannelContext
 
@@ -45,3 +47,47 @@ async def test_state_store_defaults_worktree_base_to_main_when_missing(
     assert context is not None
     assert isinstance(context, DiscordChannelContext)
     assert context.worktree_base == "main"
+
+
+@pytest.mark.anyio
+async def test_trigger_mode_uses_config_default_when_no_overrides(tmp_path) -> None:
+    config_path = tmp_path / "takopi.toml"
+    prefs = DiscordPrefsStore(config_path)
+
+    resolved = await resolve_trigger_mode(
+        prefs,
+        guild_id=123,
+        channel_id=456,
+        thread_id=None,
+        default_mode="mentions",
+    )
+
+    assert resolved == "mentions"
+
+
+@pytest.mark.anyio
+async def test_trigger_mode_override_precedence_over_config_default(tmp_path) -> None:
+    config_path = tmp_path / "takopi.toml"
+    prefs = DiscordPrefsStore(config_path)
+
+    # Channel override should beat config default.
+    await prefs.set_trigger_mode(123, 456, "all")
+    resolved_channel = await resolve_trigger_mode(
+        prefs,
+        guild_id=123,
+        channel_id=456,
+        thread_id=None,
+        default_mode="mentions",
+    )
+    assert resolved_channel == "all"
+
+    # Thread override should beat channel override and config default.
+    await prefs.set_trigger_mode(123, 789, "mentions")
+    resolved_thread = await resolve_trigger_mode(
+        prefs,
+        guild_id=123,
+        channel_id=456,
+        thread_id=789,
+        default_mode="all",
+    )
+    assert resolved_thread == "mentions"

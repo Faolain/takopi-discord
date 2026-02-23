@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Configurable trigger mode fallback via `transports.discord.trigger_mode_default`
+
 ## [0.4.0] - 2026-02-21
 
 ### Added

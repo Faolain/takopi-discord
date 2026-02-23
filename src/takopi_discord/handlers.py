@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import discord
 
@@ -58,6 +58,7 @@ def register_slash_commands(
     prefs_store: DiscordPrefsStore,
     get_running_task: callable,
     cancel_task: callable,
+    trigger_mode_default: Literal["all", "mentions"] = "all",
     runtime: TransportRuntime | None = None,
     files: DiscordFilesSettings | None = None,
     voice_manager: VoiceManager | None = None,
@@ -530,7 +531,11 @@ def register_slash_commands(
         # Show current mode
         if mode is None:
             current = await resolve_trigger_mode(
-                prefs_store, guild_id, channel_id, thread_id
+                prefs_store,
+                guild_id,
+                channel_id,
+                thread_id,
+                default_mode=trigger_mode_default,
             )
             stored = await prefs_store.get_trigger_mode(guild_id, target_id)
             if stored:
