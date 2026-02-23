@@ -455,6 +455,7 @@ async def run_main_loop(
         prefs_store=prefs_store,
         get_running_task=get_running_task,
         cancel_task=cancel_task,
+        trigger_mode_default=cfg.trigger_mode_default,
         runtime=cfg.runtime,
         files=cfg.files,
         voice_manager=voice_manager,
@@ -873,7 +874,11 @@ async def run_main_loop(
 
         # Check trigger mode - may skip processing if mentions-only and not mentioned
         trigger_mode = await resolve_trigger_mode(
-            prefs_store, guild_id, channel_id, thread_id
+            prefs_store,
+            guild_id,
+            channel_id,
+            thread_id,
+            default_mode=cfg.trigger_mode_default,
         )
         if trigger_mode == "mentions":
             # Check if bot is mentioned or if this is a reply to the bot

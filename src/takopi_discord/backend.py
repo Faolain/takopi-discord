@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import anyio
 
@@ -113,6 +113,20 @@ class DiscordBackend(TransportBackend):
         message_overflow = settings.get("message_overflow", "split")
         session_mode = settings.get("session_mode", "stateless")
         show_resume_line = settings.get("show_resume_line", True)
+        trigger_mode_default_raw = settings.get("trigger_mode_default", "all")
+        trigger_mode_default_normalized: str | None = None
+        if isinstance(trigger_mode_default_raw, str):
+            trigger_mode_default_normalized = trigger_mode_default_raw.strip().lower()
+        if trigger_mode_default_normalized not in {"all", "mentions"}:
+            logger.warning(
+                "config.invalid_trigger_mode_default",
+                value=trigger_mode_default_raw,
+                fallback="all",
+            )
+            trigger_mode_default_normalized = "all"
+        trigger_mode_default = cast(
+            Literal["all", "mentions"], trigger_mode_default_normalized
+        )
 
         # Parse files settings
         files_settings = settings.get("files", {})
@@ -152,6 +166,7 @@ class DiscordBackend(TransportBackend):
             session_mode=session_mode,
             show_resume_line=show_resume_line,
             message_overflow=message_overflow,
+            trigger_mode_default=trigger_mode_default,
             files=files_config,
         )
 
