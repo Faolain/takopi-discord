@@ -1,6 +1,10 @@
 """Tests for handlers module."""
 
-from takopi_discord.handlers import _format_engine_starter_message, parse_branch_prefix
+from takopi_discord.handlers import (
+    _format_engine_starter_message,
+    _format_summary_starter_message,
+    parse_branch_prefix,
+)
 
 
 class TestParseBranchPrefix:
@@ -78,3 +82,38 @@ class TestFormatEngineStarterMessage:
         assert msg.startswith("/codex ")
         assert msg.endswith("…")
         assert len(msg) <= 20
+
+
+class TestFormatSummaryStarterMessage:
+    def test_without_focus(self) -> None:
+        msg = _format_summary_starter_message(
+            window="7d",
+            max_messages=200,
+            include_bots=False,
+            focus=None,
+        )
+        assert "window=7d" in msg
+        assert "max_messages=200" in msg
+        assert "without bots" in msg
+
+    def test_with_focus(self) -> None:
+        msg = _format_summary_starter_message(
+            window="14d",
+            max_messages=250,
+            include_bots=True,
+            focus="release blockers",
+        )
+        assert "window=14d" in msg
+        assert "with bots" in msg
+        assert "focus=release blockers" in msg
+
+    def test_truncates_with_ellipsis(self) -> None:
+        msg = _format_summary_starter_message(
+            window="7d",
+            max_messages=200,
+            include_bots=False,
+            focus="x" * 100,
+            max_chars=40,
+        )
+        assert msg.endswith("…")
+        assert len(msg) <= 40

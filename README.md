@@ -89,6 +89,7 @@ State is automatically saved to `~/.takopi/discord_state.json`. Chat preferences
 - `/ctx [show|clear]` - Show or clear context binding
 - `/cancel` - Cancel running task
 - `/new` - Clear conversation session (start fresh)
+- `/summary [window] [max_messages] [include_bots] [focus]` - Summarize recent channel/thread history (default window: `7d`)
 
 ### Engine Commands
 
